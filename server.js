@@ -7,38 +7,82 @@ const stealth = require('puppeteer-extra-plugin-stealth')();
 
 const app = express();
 const port = 56572;
+const scrollTimeout = 30000;
+const requestTimeout = 120000;
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-let browser;
+chromium.use(stealth);
+
+let browserPromise;
+let blockerPromise;
+
+function getBrowser() {
+  if (!browserPromise) {
+    console.log("-> Launching Chromium.")
+    browserPromise = chromium.launch({
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+    });
+    browserPromise.then((browser) => {
+      browser.on('disconnected', () => {
+        console.log("-> Chromium disconnected.")
+        browserPromise = undefined;
+      });
+    }, () => {
+      browserPromise = undefined;
+    });
+  }
+  return browserPromise;
+}
+
+function getBlocker() {
+  if (!blockerPromise) {
+    blockerPromise = PlaywrightBlocker.fromPrebuiltAdsAndTracking(fetch).catch((error) => {
+      console.log("-> Could not load the adblocker:", error.message)
+      blockerPromise = undefined;
+      return null;
+    });
+  }
+  return blockerPromise;
+}
+
+function withTimeout(promise, ms) {
+  let timer;
+  const timeout = new Promise((resolve, reject) => {
+    timer = setTimeout(() => reject(new Error(`Scraping timed out after ${ms}ms.`)), ms);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
 
 async function autoScroll(page){
-    await page.evaluate(async () => {
+    await page.evaluate(async (timeout) => {
         await new Promise((resolve, reject) => {
             var totalHeight = 0;
             var distance = 100;
+            var start = Date.now();
             var timer = setInterval(() => {
-                var scrollHeight = document.body.scrollHeight;
+                // document.body is null in non-HTML documents (e.g. SVG).
+                var scrollHeight = document.body ? document.body.scrollHeight : 0;
                 window.scrollBy(0, distance);
                 totalHeight += distance;
 
-                if(totalHeight >= scrollHeight - window.innerHeight){
+                if(totalHeight >= scrollHeight - window.innerHeight || Date.now() - start >= timeout){
                     clearInterval(timer);
                     resolve();
                 }
             }, 100);
         });
-    });
+    }, scrollTimeout);
 }
 
-async function launchBrowser(url) {
-  const context = await browser.newContext({ userAgent: randomAgent });
+async function loadPage(context, url) {
   const page = await context.newPage();
 
-  PlaywrightBlocker.fromPrebuiltAdsAndTracking(fetch).then((blocker) => {
-    blocker.enableBlockingInPage(page);
-  });
+  const blocker = await getBlocker();
+  if (blocker) {
+    await blocker.enableBlockingInPage(page);
+  }
 
   await page.setDefaultNavigationTimeout(0);
 
@@ -52,20 +96,23 @@ async function launchBrowser(url) {
   await autoScroll(page);
 
   return page.content();
-};
+}
 
-app.post('/scrape', async (req, res) => {
-  if (!browser) {
-    console.log("-> Launching Chromium.")
-    chromium.use(stealth);
-    browser = await chromium.launch({
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
-  }
+async function scrape(url) {
+  const browser = await getBrowser();
+  const context = await browser.newContext({ userAgent: randomAgent });
 
   try {
+    return await withTimeout(loadPage(context, url), requestTimeout);
+  } finally {
+    await context.close();
+  }
+}
+
+app.post('/scrape', async (req, res) => {
+  try {
     console.log("-> URL:", req.body.url)
-    const content = await launchBrowser(req.body.url);
+    const content = await scrape(req.body.url);
     console.log("· Sending response.")
     res.send(content);
   } catch (error) {
