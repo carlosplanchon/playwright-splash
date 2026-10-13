@@ -11,4 +11,6 @@ COPY server.js /home/pwuser
 
 EXPOSE 56572
 
+USER pwuser
+
 CMD [ "node", "server.js" ]

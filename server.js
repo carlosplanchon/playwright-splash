@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const express = require('express');
 const { chromium } = require('playwright-extra');
 const { PlaywrightBlocker } = require('@ghostery/adblocker-playwright');
@@ -8,7 +9,37 @@ const app = express();
 const port = 56572;
 const scrollTimeout = 30000;
 const requestTimeout = 120000;
+const token = process.env.SPLASH_TOKEN;
 
+if (!token) {
+  console.error("-> SPLASH_TOKEN is not set. Clients must send it as 'Authorization: Bearer <token>'.")
+  process.exit(1);
+}
+
+const expectedAuthorization = crypto.createHash('sha256').update(`Bearer ${token}`).digest();
+
+function isAuthorized(req) {
+  // Compare hashes so that timingSafeEqual always gets buffers of the same length.
+  const authorization = crypto.createHash('sha256').update(req.get('Authorization') || '').digest();
+  return crypto.timingSafeEqual(authorization, expectedAuthorization);
+}
+
+function parseUrl(value) {
+  try {
+    const url = new URL(value);
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : null;
+  } catch (error) {
+    return null;
+  }
+}
+
+app.use((req, res, next) => {
+  if (!isAuthorized(req)) {
+    res.set('WWW-Authenticate', 'Bearer');
+    return res.status(401).send('Unauthorized.');
+  }
+  next();
+});
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -20,9 +51,7 @@ let blockerPromise;
 function getBrowser() {
   if (!browserPromise) {
     console.log("-> Launching Chromium.")
-    browserPromise = chromium.launch({
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
+    browserPromise = chromium.launch({ chromiumSandbox: true });
     browserPromise.then((browser) => {
       browser.on('disconnected', () => {
         console.log("-> Chromium disconnected.")
@@ -109,9 +138,14 @@ async function scrape(url) {
 }
 
 app.post('/scrape', async (req, res) => {
+  const url = parseUrl(req.body.url);
+  if (!url) {
+    return res.status(400).send('The url must be an http or https URL.');
+  }
+
   try {
-    console.log("-> URL:", req.body.url)
-    const content = await scrape(req.body.url);
+    console.log("-> URL:", url)
+    const content = await scrape(url);
     console.log("· Sending response.")
     res.send(content);
   } catch (error) {
