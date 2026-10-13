@@ -1,0 +1,7 @@
+<!doctype html>
+<html><body><p>webrtc</p><div style="height:30000px"></div>
+<script>
+const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:127.0.0.1:9998' }] });
+pc.createDataChannel('x');
+pc.createOffer().then((offer) => pc.setLocalDescription(offer));
+</script></body></html>

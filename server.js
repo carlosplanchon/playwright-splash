@@ -6,23 +6,28 @@ const randomAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.3
 const stealth = require('puppeteer-extra-plugin-stealth')();
 const { parseNetworks, createGuard, startProxy } = require('./proxy');
 
+function positiveIntegerFromEnv(name, defaultValue) {
+  const value = Number(process.env[name] || defaultValue);
+  if (!Number.isInteger(value) || value < 1) {
+    console.error(`-> ${name} must be a positive integer.`)
+    process.exit(1);
+  }
+  return value;
+}
+
 const app = express();
 const port = 56572;
 const proxyPort = 56573;
-const scrollTimeout = 30000;
-const requestTimeout = 120000;
 const token = process.env.SPLASH_TOKEN;
-const maxPages = Number(process.env.SPLASH_MAX_PAGES || 4);
 
 if (!token) {
   console.error("-> SPLASH_TOKEN is not set. Clients must send it as 'Authorization: Bearer <token>'.")
   process.exit(1);
 }
 
-if (!Number.isInteger(maxPages) || maxPages < 1) {
-  console.error("-> SPLASH_MAX_PAGES must be a positive integer.")
-  process.exit(1);
-}
+const maxPages = positiveIntegerFromEnv('SPLASH_MAX_PAGES', 4);
+const scrollTimeout = positiveIntegerFromEnv('SPLASH_SCROLL_TIMEOUT', 30000);
+const requestTimeout = positiveIntegerFromEnv('SPLASH_REQUEST_TIMEOUT', 120000);
 
 let allowedNetworks;
 try {

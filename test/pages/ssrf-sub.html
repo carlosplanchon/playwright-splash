@@ -1,0 +1,13 @@
+<!doctype html>
+<html><body><p>subresources</p><div style="height:30000px"></div>
+<img src="http://127.0.0.1:9999/img">
+<img src="http://localtest.me:9999/dns-img">
+<iframe src="http://127.0.0.1:9999/iframe"></iframe>
+<script>
+fetch('http://127.0.0.1:9999/fetch', { mode: 'no-cors' }).catch(() => {});
+fetch('https://127.0.0.1:9999/fetch-https', { mode: 'no-cors' }).catch(() => {});
+fetch('http://[::ffff:127.0.0.1]:9999/fetch-mapped', { mode: 'no-cors' }).catch(() => {});
+fetch('http://169.254.169.254/latest/meta-data/', { mode: 'no-cors' }).catch(() => {});
+try { navigator.sendBeacon('http://127.0.0.1:9999/beacon', 'x'); } catch (e) {}
+try { new WebSocket('ws://127.0.0.1:9999/ws'); } catch (e) {}
+</script></body></html>

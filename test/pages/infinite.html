@@ -1,0 +1,8 @@
+<!doctype html>
+<html><body><div id="feed"></div>
+<script>
+const feed = document.getElementById('feed');
+function more(n) { for (let i = 0; i < n; i++) { const d = document.createElement('div'); d.style.height = '100px'; d.textContent = 'item'; feed.appendChild(d); } }
+more(200);
+window.addEventListener('scroll', () => { if (window.scrollY + window.innerHeight > document.body.scrollHeight - 2000) more(50); });
+</script></body></html>

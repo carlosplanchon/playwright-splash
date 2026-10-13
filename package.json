@@ -1,4 +1,8 @@
 {
+  "scripts": {
+    "test": "node --test \"test/*.test.js\"",
+    "test:unit": "node --test test/proxy.test.js"
+  },
   "dependencies": {
     "@ghostery/adblocker-playwright": "^2.20.1",
     "express": "^4.18.2",
