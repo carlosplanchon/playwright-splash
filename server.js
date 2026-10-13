@@ -1,8 +1,7 @@
 const express = require('express');
 const { chromium } = require('playwright-extra');
-const { PlaywrightBlocker } = require('@cliqz/adblocker-playwright');
+const { PlaywrightBlocker } = require('@ghostery/adblocker-playwright');
 const randomAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36';
-const { fetch } = require('cross-fetch');
 const stealth = require('puppeteer-extra-plugin-stealth')();
 
 const app = express();
