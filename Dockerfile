@@ -7,7 +7,7 @@ WORKDIR /home/pwuser
 COPY package.json package-lock.json /home/pwuser/
 RUN npm ci --omit=dev
 
-COPY server.js /home/pwuser
+COPY server.js proxy.js /home/pwuser/
 
 EXPOSE 56572
 
