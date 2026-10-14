@@ -15,7 +15,7 @@ docker run -it --rm --init --ipc=host --security-opt seccomp=seccomp_profile.jso
 
 At most 4 pages are rendered at the same time and the other requests wait for their turn. Set `SPLASH_MAX_PAGES` (e.g. `-e SPLASH_MAX_PAGES=8`) to change that limit.
 
-Each page gets up to 120 seconds in total, and up to 30 of them are spent scrolling to load lazy content. Set `SPLASH_REQUEST_TIMEOUT` and `SPLASH_SCROLL_TIMEOUT` (in milliseconds) to change them.
+Each page gets up to 120 seconds in total. Once its HTML has loaded, the server waits up to 10 seconds for images and other resources (if they take longer, it reads the page anyway) and then spends up to 30 seconds scrolling to load lazy content. Set `SPLASH_REQUEST_TIMEOUT`, `SPLASH_LOAD_TIMEOUT` and `SPLASH_SCROLL_TIMEOUT` (in milliseconds) to change them.
 
 Pages can't reach internal networks (loopback, private ranges, link-local addresses such as cloud metadata endpoints, etc.). The server answers 403 when the URL points to one, and all the browser's traffic goes through an internal proxy that also blocks them in redirects, subresources and WebSockets. To allow specific internal networks, set `SPLASH_ALLOWED_NETWORKS` to a comma-separated list of addresses or CIDR ranges (e.g. `-e SPLASH_ALLOWED_NETWORKS=10.1.2.0/24,192.168.1.10`).
 
@@ -27,7 +27,7 @@ Send the URL to `/scrape` with the token. Only http and https URLs are accepted.
 curl -X POST http://127.0.0.1:56572/scrape -H 'Authorization: Bearer <your-token>' -H 'Content-Type: application/json' -d '{"url": "https://example.com"}'
 ```
 
-The response body is the rendered HTML. The `X-Splash-Status` header has the HTTP status of the page (e.g. `404`) and `X-Splash-Url` its final URL, after redirects. The server answers 403 when the URL points to an internal network or redirects to one over plain HTTP.
+The response body is the rendered HTML. The `X-Splash-Status` header has the HTTP status of the page (e.g. `404`) and `X-Splash-Url` its final URL, after redirects, including the ones the page does by itself (meta refresh, JavaScript). The server answers 403 when the URL points to an internal network or redirects to one over plain HTTP.
 
 ### Tests:
 `npm test` runs the unit and integration tests (it needs Node.js 20 or later). The integration tests build the Docker image and run containers against local test pages, so they need Docker on Linux; they are skipped when Docker isn't available. `npm run test:unit` runs only the unit tests.

@@ -18,6 +18,8 @@ function positiveIntegerFromEnv(name, defaultValue) {
 const app = express();
 const port = 56572;
 const proxyPort = 56573;
+const navigationTimeout = 60000;
+const maxNavigations = 5;
 const token = process.env.SPLASH_TOKEN;
 
 if (!token) {
@@ -27,6 +29,7 @@ if (!token) {
 
 const maxPages = positiveIntegerFromEnv('SPLASH_MAX_PAGES', 4);
 const scrollTimeout = positiveIntegerFromEnv('SPLASH_SCROLL_TIMEOUT', 30000);
+const loadTimeout = positiveIntegerFromEnv('SPLASH_LOAD_TIMEOUT', 10000);
 const requestTimeout = positiveIntegerFromEnv('SPLASH_REQUEST_TIMEOUT', 120000);
 
 let allowedNetworks;
@@ -165,6 +168,65 @@ async function autoScroll(page){
     }, scrollTimeout);
 }
 
+function trackNavigations(page) {
+  const navigations = { started: 0, committed: Promise.resolve(), response: null, failure: null };
+  const isMainFrame = (request) => {
+    try {
+      return request.isNavigationRequest() && request.frame() === page.mainFrame();
+    } catch (error) {
+      return false;
+    }
+  };
+
+  page.on('request', (request) => {
+    if (isMainFrame(request) && !request.redirectedFrom()) {
+      navigations.started++;
+      navigations.committed = page.waitForEvent('framenavigated', {
+        predicate: (frame) => frame === page.mainFrame(),
+        timeout: navigationTimeout,
+      }).catch(() => {});
+    }
+  });
+  page.on('response', (response) => {
+    if (isMainFrame(response.request())) {
+      navigations.response = response;
+    }
+  });
+  page.on('requestfailed', (request) => {
+    if (isMainFrame(request)) {
+      navigations.failure = `${request.failure().errorText} at ${request.url()}`;
+    }
+  });
+  return navigations;
+}
+
+// Follows the redirects that the page does by itself.
+async function readPage(page, navigations) {
+  for (let i = 0; ; i++) {
+    const started = navigations.started;
+    const navigated = () => navigations.started !== started && i < maxNavigations;
+
+    await navigations.committed;
+    await page.waitForLoadState('load', { timeout: loadTimeout }).catch(() => {});
+    if (navigated()) {
+      continue;
+    }
+
+    try {
+      await page.setViewportSize({ width: 1600, height: 10000 });
+      await autoScroll(page);
+      const content = await page.content();
+      if (!navigated()) {
+        return content;
+      }
+    } catch (error) {
+      if (!navigated()) {
+        throw error;
+      }
+    }
+  }
+}
+
 async function loadPage(context, url) {
   const page = await context.newPage();
 
@@ -173,23 +235,27 @@ async function loadPage(context, url) {
     await blocker.enableBlockingInPage(page);
   }
 
-  const response = await page.goto(url, {
-    timeout: 60000,
-    waitUntil: 'load',
+  const navigations = trackNavigations(page);
+  await page.goto(url, {
+    timeout: navigationTimeout,
+    waitUntil: 'domcontentloaded',
     referer: 'https://www.google.com/'
   });
+  const content = await readPage(page, navigations);
+
+  if (page.url().startsWith('chrome-error://')) {
+    throw new Error(navigations.failure || 'The page navigated to an address that could not be loaded.');
+  }
 
   // The proxy refused the page itself, typically because a redirect led to an internal network.
+  const { response } = navigations;
   if (response && response.headers()['x-splash-blocked'] === blockedMarker) {
     const error = new Error('The url or one of its redirects points to an internal network.');
     error.status = 403;
     throw error;
   }
 
-  await page.setViewportSize({ width: 1600, height: 10000 });
-  await autoScroll(page);
-
-  return { content: await page.content(), status: response && response.status(), url: page.url() };
+  return { content, status: response && response.status(), url: page.url() };
 }
 
 async function scrape(url) {

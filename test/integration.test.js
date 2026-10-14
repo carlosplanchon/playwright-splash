@@ -52,6 +52,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       SPLASH_TOKEN: token,
       SPLASH_ALLOWED_NETWORKS: `${gateway}/32`,
       SPLASH_SCROLL_TIMEOUT: '3000',
+      SPLASH_LOAD_TIMEOUT: '2000',
       SPLASH_REQUEST_TIMEOUT: '10000',
       ...env,
     };
@@ -152,9 +153,14 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
     pageServer = http.createServer((req, res) => {
       pageRequests.push(req.url);
       const url = new URL(req.url, 'http://pages');
+      if (url.pathname === '/hang') {
+        return;
+      }
       if (url.pathname === '/redirect') {
-        res.writeHead(302, { Location: url.searchParams.get('to') });
-        return res.end();
+        return setTimeout(() => {
+          res.writeHead(302, { Location: url.searchParams.get('to') });
+          res.end();
+        }, Number(url.searchParams.get('delay') || 0));
       }
       if (url.pathname === '/spoof-blocked') {
         res.writeHead(200, { 'Content-Type': 'text/html', 'X-Splash-Blocked': 'not-the-marker' });
@@ -177,6 +183,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
 
   after(async () => {
     await run('docker', ['rm', '-f', ...containers]).catch(() => {});
+    pageServer?.closeAllConnections();
     pageServer?.close();
   });
 
@@ -189,7 +196,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
 
     for (const [name, value] of [
       ['SPLASH_MAX_PAGES', 'abc'], ['SPLASH_MAX_PAGES', '0'], ['SPLASH_REQUEST_TIMEOUT', '-1'],
-      ['SPLASH_SCROLL_TIMEOUT', '2.5'], ['SPLASH_ALLOWED_NETWORKS', '10.0.0.0/'],
+      ['SPLASH_SCROLL_TIMEOUT', '2.5'], ['SPLASH_LOAD_TIMEOUT', 'abc'], ['SPLASH_ALLOWED_NETWORKS', '10.0.0.0/'],
     ]) {
       it(`refuses to start with ${name}=${value}`, slow, async () => {
         const { code, output } = await runToExit({ [name]: value });
@@ -281,6 +288,30 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       assert.equal(res.status, 500);
       assert.match(res.body, /timed out after 10000ms/);
       await noPagesLeft(container);
+    });
+
+    it('reads pages whose resources never finish loading after SPLASH_LOAD_TIMEOUT', slow, async () => {
+      const start = Date.now();
+      const res = await scrape(container, `${pagesUrl}/hang.html`);
+      assert.equal(res.status, 200);
+      assert.match(res.body, /<h1>Hanging<\/h1>/);
+      assert.ok(Date.now() - start < 8000, `took ${Date.now() - start} ms`);
+    });
+
+    it('follows the redirects that pages do by themselves', slow, async () => {
+      for (const page of ['meta-refresh.html', 'meta-refresh-slow.html', 'js-redirect.html']) {
+        const res = await scrape(container, `${pagesUrl}/${page}`);
+        assert.equal(res.status, 200, page);
+        assert.match(res.body, /<h1>Hello<\/h1>/, page);
+        assert.equal(res.headers.get('x-splash-status'), '200', page);
+        assert.equal(res.headers.get('x-splash-url'), `${pagesUrl}/ok.html`, page);
+      }
+    });
+
+    it('fails when a page redirects by itself to an address that cannot be loaded', slow, async () => {
+      const res = await scrape(container, `${pagesUrl}/refresh-unreachable.html`);
+      assert.equal(res.status, 500);
+      assert.match(res.body, /ERR_TUNNEL_CONNECTION_FAILED at https:\/\/nonexistent\.invalid\//);
     });
 
     it('survives pages that keep sending requests while they are closed', slow, async () => {
@@ -395,9 +426,11 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
 
     it('answers 403 when a redirect leads to an internal network', slow, async () => {
       const container = await startContainer();
-      const res = await scrape(container, `${pagesUrl}/redirect?to=${encodeURIComponent('http://127.0.0.1:9999/')}`);
-      assert.equal(res.status, 403);
-      assert.match(res.body, /redirects points to an internal network/);
+      for (const url of [`${pagesUrl}/redirect?to=${encodeURIComponent('http://127.0.0.1:9999/')}`, `${pagesUrl}/refresh-internal.html`]) {
+        const res = await scrape(container, url);
+        assert.equal(res.status, 403, url);
+        assert.match(res.body, /redirects points to an internal network/);
+      }
     });
 
     it('blocks redirects, subresources, WebSockets and WebRTC that reach for internal networks', slow, async () => {
