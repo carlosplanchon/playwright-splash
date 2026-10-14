@@ -13,7 +13,7 @@ docker run -it --rm --init --ipc=host --security-opt seccomp=seccomp_profile.jso
 
 `SPLASH_TOKEN` is required: the server refuses to start without it. You can generate one with `openssl rand -hex 32`. The port is only published on 127.0.0.1; change `-p` if other machines need to reach the server.
 
-At most 4 pages are rendered at the same time and the other requests wait for their turn. Set `SPLASH_MAX_PAGES` (e.g. `-e SPLASH_MAX_PAGES=8`) to change that limit.
+At most 4 pages are rendered at the same time and the other requests wait for their turn. Set `SPLASH_MAX_PAGES` (e.g. `-e SPLASH_MAX_PAGES=8`) to change that limit. When a client disconnects, its request is dropped: if it was waiting, its page is never opened, and if it was rendering, its page is closed right away.
 
 Each page gets up to 120 seconds in total. Once its HTML has loaded, the server waits up to 10 seconds for images and other resources (if they take longer, it reads the page anyway) and then spends up to 30 seconds scrolling to load lazy content. Set `SPLASH_REQUEST_TIMEOUT`, `SPLASH_LOAD_TIMEOUT` and `SPLASH_SCROLL_TIMEOUT` (in milliseconds) to change them.
 

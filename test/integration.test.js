@@ -392,6 +392,29 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       assert.ok(maxRenderers >= 1 && maxRenderers <= 2, `saw ${maxRenderers} renderers`);
     });
 
+    it('drops queued requests whose client went away', slow, async () => {
+      const container = await startContainer({ SPLASH_MAX_PAGES: '1' });
+      await scrape(container, `${pagesUrl}/ok.html`);
+      const busy = scrape(container, `${pagesUrl}/tall.html`);
+      await sleep(500);
+      const abandoned = await Promise.all([1, 2, 3].map((i) => scrape(container, `${pagesUrl}/ok.html?abandoned=${i}`, { timeout: 1000 })
+        .catch((error) => error.name)));
+      assert.deepEqual(abandoned, ['TimeoutError', 'TimeoutError', 'TimeoutError']);
+      assert.equal((await busy).status, 200);
+      await waitFor(async () => (await logs(container)).split('-> The client went away').length - 1 === 3, 5000, 'the abandoned requests to be dropped');
+      assert.equal((await scrape(container, `${pagesUrl}/ok.html`)).status, 200);
+      assert.deepEqual(pageRequests.filter((url) => url.includes('abandoned')), []);
+    });
+
+    it('closes the page as soon as its client goes away', slow, async () => {
+      const container = await startContainer({ SPLASH_SCROLL_TIMEOUT: '20000', SPLASH_REQUEST_TIMEOUT: '20000' });
+      await scrape(container, `${pagesUrl}/ok.html`);
+      const gone = await scrape(container, `${pagesUrl}/tall.html`, { timeout: 1500 }).catch((error) => error.name);
+      assert.equal(gone, 'TimeoutError');
+      await waitFor(async () => (await renderers(container)).length === 0, 3000, 'the page to be closed');
+      assert.match(await logs(container), /The client went away: .*\/tall\.html/);
+    });
+
     it('shuts down quickly on docker stop, failing pending requests', slow, async () => {
       const container = await startContainer({ SPLASH_MAX_PAGES: '1' });
       await scrape(container, `${pagesUrl}/ok.html`);

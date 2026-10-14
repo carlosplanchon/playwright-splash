@@ -139,12 +139,21 @@ async function withPageSlot(fn) {
   }
 }
 
-function withTimeout(promise, ms) {
+function withTimeout(promise, ms, signal) {
   let timer;
-  const timeout = new Promise((resolve, reject) => {
+  let onAbort;
+  const stopped = new Promise((resolve, reject) => {
     timer = setTimeout(() => reject(new Error(`Scraping timed out after ${ms}ms.`)), ms);
+    onAbort = () => reject(signal.reason);
+    signal.addEventListener('abort', onAbort);
+    if (signal.aborted) {
+      onAbort();
+    }
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  return Promise.race([promise, stopped]).finally(() => {
+    clearTimeout(timer);
+    signal.removeEventListener('abort', onAbort);
+  });
 }
 
 async function autoScroll(page){
@@ -258,12 +267,13 @@ async function loadPage(context, url) {
   return { content, status: response && response.status(), url: page.url() };
 }
 
-async function scrape(url) {
+async function scrape(url, signal) {
+  signal.throwIfAborted();
   const browser = await getBrowser();
   const context = await browser.newContext({ userAgent });
 
   try {
-    return await withTimeout(loadPage(context, url), requestTimeout);
+    return await withTimeout(loadPage(context, url), requestTimeout, signal);
   } finally {
     await context.close();
   }
@@ -275,6 +285,13 @@ app.post('/scrape', async (req, res) => {
     return res.status(400).send('The url must be an http or https URL.');
   }
 
+  const clientGone = new AbortController();
+  res.on('close', () => {
+    if (!res.writableFinished) {
+      clientGone.abort();
+    }
+  });
+
   try {
     // The proxy blocks internal networks anyway; checking here gives a clear error.
     if (await guard.isInternalHost(new URL(url).hostname)) {
@@ -282,7 +299,7 @@ app.post('/scrape', async (req, res) => {
     }
 
     console.log("-> URL:", url)
-    const result = await withPageSlot(() => scrape(url));
+    const result = await withPageSlot(() => scrape(url, clientGone.signal));
     console.log("· Sending response.")
     if (result.status) {
       res.set('X-Splash-Status', String(result.status));
@@ -290,6 +307,10 @@ app.post('/scrape', async (req, res) => {
     res.set('X-Splash-Url', result.url);
     res.send(result.content);
   } catch (error) {
+    if (clientGone.signal.aborted) {
+      console.log("-> The client went away:", url)
+      return;
+    }
     res.status(error.status || 500).send(error.message);
   }
 });
