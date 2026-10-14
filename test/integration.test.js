@@ -208,6 +208,12 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
         assert.match(output, new RegExp(name));
       });
     }
+
+    it('exits when its port is taken', slow, async () => {
+      const { code, output } = await runToExit({ NODE_OPTIONS: '--require /fixtures/occupy-port.js' });
+      assert.equal(code, 1);
+      assert.match(output, /Could not listen on port 56572/);
+    });
   });
 
   describe('API', () => {
@@ -250,6 +256,10 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
         const res = await scrape(container, url);
         assert.equal(res.status, 400, String(url));
       }
+      const withoutBody = await fetch(`http://127.0.0.1:${container.port}/scrape`, {
+        method: 'POST', headers: { Authorization: `Bearer ${token}` },
+      });
+      assert.equal(withoutBody.status, 400);
     });
 
     it('returns the rendered HTML and closes every page', slow, async () => {

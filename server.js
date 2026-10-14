@@ -299,7 +299,7 @@ async function scrape(url, signal) {
 }
 
 app.post('/scrape', async (req, res) => {
-  const url = parseUrl(req.body.url);
+  const url = parseUrl(req.body?.url);
   if (!url) {
     return res.status(400).send('The url must be an http or https URL.');
   }
@@ -335,7 +335,11 @@ app.post('/scrape', async (req, res) => {
 });
 
 
-const server = app.listen(port, '0.0.0.0', () => {
+const server = app.listen(port, '0.0.0.0', (error) => {
+  if (error) {
+    console.error(`-> Could not listen on port ${port}:`, error.message)
+    process.exit(1);
+  }
   console.log(`Server listening at http://localhost:${port}`);
 });
 
