@@ -2,7 +2,6 @@ const crypto = require('crypto');
 const express = require('express');
 const { chromium } = require('playwright-extra');
 const { PlaywrightBlocker, adsAndTrackingLists } = require('@ghostery/adblocker-playwright');
-const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36';
 const stealth = require('puppeteer-extra-plugin-stealth')();
 const { blockedMarker, parseNetworks, createGuard, startProxy } = require('./proxy');
 
@@ -32,6 +31,15 @@ const scrollTimeout = positiveIntegerFromEnv('SPLASH_SCROLL_TIMEOUT', 30000);
 const loadTimeout = positiveIntegerFromEnv('SPLASH_LOAD_TIMEOUT', 10000);
 const requestTimeout = positiveIntegerFromEnv('SPLASH_REQUEST_TIMEOUT', 120000);
 
+let locale;
+try {
+  [locale] = Intl.getCanonicalLocales(process.env.SPLASH_LOCALE || 'en-US');
+} catch (error) {
+  console.error("-> SPLASH_LOCALE must be a language tag such as en-US.")
+  process.exit(1);
+}
+const languages = [...new Set([locale, locale.split('-')[0]])];
+
 let allowedNetworks;
 try {
   allowedNetworks = parseNetworks(process.env.SPLASH_ALLOWED_NETWORKS);
@@ -46,7 +54,7 @@ const proxyServer = startProxy(guard, proxyPort);
 const expectedAuthorization = crypto.createHash('sha256').update(`Bearer ${token}`).digest();
 
 function isAuthorized(req) {
-  // Compare hashes so that timingSafeEqual always gets buffers of the same length.
+  // Same-length buffers for timingSafeEqual.
   const authorization = crypto.createHash('sha256').update(req.get('Authorization') || '').digest();
   return crypto.timingSafeEqual(authorization, expectedAuthorization);
 }
@@ -70,7 +78,12 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
+// Same languages in Accept-Language and navigator.languages.
+stealth.enabledEvasions.delete('navigator.languages');
+stealth.enabledEvasions.delete('user-agent-override');
 chromium.use(stealth);
+chromium.use(require('puppeteer-extra-plugin-stealth/evasions/navigator.languages')({ languages }));
+chromium.use(require('puppeteer-extra-plugin-stealth/evasions/user-agent-override')({ locale: languages.join(',') }));
 
 let browserPromise;
 let blockerPromise;
@@ -85,9 +98,10 @@ function getBrowser() {
   if (!browserPromise) {
     console.log("-> Launching Chromium.")
     browserPromise = chromium.launch({
+      // Explicit so that stealth sends Accept-Language.
+      headless: true,
       chromiumSandbox: true,
-      // All browser traffic goes through the proxy, which refuses internal networks.
-      // The flags close the ways around it: QUIC, WebRTC over UDP and local DNS resolution.
+      // Everything goes through the proxy; the flags close the bypasses.
       proxy: { server: `http://127.0.0.1:${proxyPort}` },
       args: [
         '--disable-quic',
@@ -107,10 +121,19 @@ function getBrowser() {
   return browserPromise;
 }
 
+function fetchList(url) {
+  return fetch(url).then((response) => {
+    if (!response.ok) {
+      throw new Error(`${url} answered ${response.status}.`);
+    }
+    return response;
+  });
+}
+
 function getBlocker() {
   if (!blockerPromise) {
-    // Cosmetic filters only inject styles into the returned HTML, so only network filters are used.
-    blockerPromise = PlaywrightBlocker.fromLists(fetch, adsAndTrackingLists, { loadCosmeticFilters: false }).catch((error) => {
+    // Network filters only: cosmetic ones inject styles into the HTML.
+    blockerPromise = PlaywrightBlocker.fromLists(fetchList, adsAndTrackingLists, { loadCosmeticFilters: false }).catch((error) => {
       console.log("-> Could not load the adblocker:", error.message)
       blockerPromise = undefined;
       return null;
@@ -245,18 +268,14 @@ async function loadPage(context, url) {
   }
 
   const navigations = trackNavigations(page);
-  await page.goto(url, {
-    timeout: navigationTimeout,
-    waitUntil: 'domcontentloaded',
-    referer: 'https://www.google.com/'
-  });
+  await page.goto(url, { timeout: navigationTimeout, waitUntil: 'domcontentloaded' });
   const content = await readPage(page, navigations);
 
   if (page.url().startsWith('chrome-error://')) {
     throw new Error(navigations.failure || 'The page navigated to an address that could not be loaded.');
   }
 
-  // The proxy refused the page itself, typically because a redirect led to an internal network.
+  // The proxy refused the page (a redirect to an internal network).
   const { response } = navigations;
   if (response && response.headers()['x-splash-blocked'] === blockedMarker) {
     const error = new Error('The url or one of its redirects points to an internal network.');
@@ -270,7 +289,7 @@ async function loadPage(context, url) {
 async function scrape(url, signal) {
   signal.throwIfAborted();
   const browser = await getBrowser();
-  const context = await browser.newContext({ userAgent });
+  const context = await browser.newContext({ locale });
 
   try {
     return await withTimeout(loadPage(context, url), requestTimeout, signal);
@@ -293,7 +312,7 @@ app.post('/scrape', async (req, res) => {
   });
 
   try {
-    // The proxy blocks internal networks anyway; checking here gives a clear error.
+    // The proxy blocks it anyway; this gives a clearer error.
     if (await guard.isInternalHost(new URL(url).hostname)) {
       return res.status(403).send('The url points to an internal network.');
     }
@@ -328,6 +347,6 @@ process.on('SIGTERM', () => {
   if (browserPromise) {
     browserPromise.then((browser) => browser.close()).catch(() => {});
   }
-  // Exit before Docker's 10 s stop timeout even if something keeps the process alive.
+  // Exit before Docker's 10 s stop timeout.
   setTimeout(() => process.exit(0), 5000).unref();
 });

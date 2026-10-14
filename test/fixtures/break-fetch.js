@@ -1,2 +1,2 @@
-// Preloaded with NODE_OPTIONS to make the adblock list download fail.
+// NODE_OPTIONS preload: the adblock lists fail to download.
 globalThis.fetch = () => Promise.reject(new Error('simulated network failure'));

@@ -1,4 +1,4 @@
-# The image version must match the playwright version in package.json.
+# Must match the playwright version in package.json.
 FROM mcr.microsoft.com/playwright:v1.64.0-noble
 
 WORKDIR /home/pwuser

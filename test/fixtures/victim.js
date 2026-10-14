@@ -1,6 +1,4 @@
-// Internal "victim" for the internal network tests: it runs inside the container on
-// 127.0.0.1 and writes every HTTP request, WebSocket upgrade, TLS handshake and UDP
-// packet it receives to /tmp/hits.log.
+// Logs every HTTP, WebSocket, TLS and UDP hit to /tmp/hits.log.
 const dgram = require('dgram');
 const fs = require('fs');
 const http = require('http');

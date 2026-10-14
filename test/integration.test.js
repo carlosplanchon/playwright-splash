@@ -1,5 +1,4 @@
-// Integration tests: they build the Docker image and run it against local test pages.
-// They need Docker on Linux, because the test pages are served on the Docker bridge address.
+// Needs Docker on Linux: pages are served on the bridge address.
 const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { execFile, execFileSync } = require('node:child_process');
@@ -78,7 +77,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
     return container;
   }
 
-  // Runs a container that is expected to exit on its own and returns its exit code and output.
+  // For containers that exit on their own.
   async function runToExit(env) {
     const name = `splash-test-${process.pid}-${containers.length}`;
     containers.push(name);
@@ -110,7 +109,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
   }
 
   const renderers = async (container) => (await processes(container)).filter(({ args }) => args.includes('--type=renderer'));
-  // Renderer processes take a moment to exit after their page is closed; a leaked page never does.
+  // Renderers take a moment to exit after their page closes.
   const noPagesLeft = (container) => waitFor(async () => (await renderers(container)).length === 0, 5000, 'pages to be closed');
   const browserProcess = async (container) => (await processes(container))
     .find(({ args }) => args.includes('--remote-debugging-pipe') && !args.includes('--type='));
@@ -126,8 +125,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
     return stdout;
   }
 
-  // Starts the internal victim inside the container and checks that it really sees HTTP
-  // and UDP traffic, so a test that expects no hits can't pass because it is broken.
+  // Self-checks the victim so that "no hits" means something.
   async function startVictim(container) {
     await run('docker', ['exec', '-d', container.name, 'node', '/fixtures/victim.js']);
     await waitFor(async () => (await victimLog(container).catch(() => '')).includes('READY'), 10000, 'the victim');
@@ -155,6 +153,11 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       const url = new URL(req.url, 'http://pages');
       if (url.pathname === '/hang') {
         return;
+      }
+      if (url.pathname === '/headers') {
+        res.writeHead(200, { 'Content-Type': 'text/html' });
+        return res.end(`<!doctype html><pre id="headers">${JSON.stringify(req.headers).replace(/</g, '\\u003c')}</pre><pre id="languages"></pre>
+<script>document.getElementById('languages').textContent = JSON.stringify(navigator.languages);</script>`);
       }
       if (url.pathname === '/redirect') {
         return setTimeout(() => {
@@ -196,7 +199,8 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
 
     for (const [name, value] of [
       ['SPLASH_MAX_PAGES', 'abc'], ['SPLASH_MAX_PAGES', '0'], ['SPLASH_REQUEST_TIMEOUT', '-1'],
-      ['SPLASH_SCROLL_TIMEOUT', '2.5'], ['SPLASH_LOAD_TIMEOUT', 'abc'], ['SPLASH_ALLOWED_NETWORKS', '10.0.0.0/'],
+      ['SPLASH_SCROLL_TIMEOUT', '2.5'], ['SPLASH_LOAD_TIMEOUT', 'abc'], ['SPLASH_LOCALE', 'not a locale'],
+      ['SPLASH_ALLOWED_NETWORKS', '10.0.0.0/'],
     ]) {
       it(`refuses to start with ${name}=${value}`, slow, async () => {
         const { code, output } = await runToExit({ [name]: value });
@@ -327,6 +331,22 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       assert.equal(JSON.parse(json).webdriver, false);
     });
 
+    it('announces the SPLASH_LOCALE languages like a regular Chrome, without a referer', slow, async () => {
+      const read = async (target) => {
+        const { body } = await scrape(target, `${pagesUrl}/headers`);
+        const pre = (id) => JSON.parse(body.match(new RegExp(`<pre id="${id}">([^<]*)</pre>`))[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&'));
+        return { headers: pre('headers'), languages: pre('languages') };
+      };
+      const english = await read(container);
+      assert.equal(english.headers['accept-language'], 'en-US,en;q=0.9');
+      assert.deepEqual(english.languages, ['en-US', 'en']);
+      assert.equal(english.headers.referer, undefined);
+      assert.match(english.headers['user-agent'], /\(Windows NT 10\.0; Win64; x64\).*Chrome\/\d+/);
+      const spanish = await read(await startContainer({ SPLASH_LOCALE: 'es-UY' }));
+      assert.equal(spanish.headers['accept-language'], 'es-UY,es;q=0.9');
+      assert.deepEqual(spanish.languages, ['es-UY', 'es']);
+    });
+
     it('runs Chromium as pwuser with its sandbox enabled', slow, async () => {
       const request = scrape(container, `${pagesUrl}/tall.html`);
       await waitFor(async () => (await renderers(container)).length > 0, 10000, 'a renderer');
@@ -375,6 +395,12 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       assert.equal((await scrape(container, `${pagesUrl}/ok.html`)).status, 200);
       assert.match(await logs(container), /Could not load the adblocker: simulated network failure/);
       assert.ok(await isRunning(container));
+    });
+
+    it('does not use the adblocker when the lists answer with an HTTP error', slow, async () => {
+      const container = await startContainer({ NODE_OPTIONS: '--require /fixtures/fetch-429.js' });
+      assert.equal((await scrape(container, `${pagesUrl}/ok.html`)).status, 200);
+      assert.match(await logs(container), /Could not load the adblocker: \S+ answered 429/);
     });
 
     it('renders at most SPLASH_MAX_PAGES pages at a time', slow, async () => {

@@ -3,13 +3,10 @@ const dns = require('dns');
 const http = require('http');
 const net = require('net');
 
-// Value of the X-Splash-Blocked header on the responses the proxy refuses. It is random so
-// that a page can't fake it.
+// Random, so that pages can't fake it.
 const blockedMarker = crypto.randomBytes(16).toString('hex');
 
-// Ranges that scraped pages must never reach: "this network", private networks, CGNAT,
-// loopback, link-local (cloud metadata), multicast, reserved and the IPv6 equivalents.
-// IPv4-mapped IPv6 addresses (::ffff:a.b.c.d) are matched against the IPv4 rules.
+// Internal networks that pages must never reach.
 const internalNetworks = new net.BlockList();
 for (const [address, prefix] of [
   ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
@@ -29,7 +26,7 @@ const hopByHopHeaders = [
   'te', 'trailer', 'transfer-encoding', 'upgrade',
 ];
 
-// Parses a comma-separated list of addresses or CIDR ranges, e.g. "10.1.2.0/24,192.168.1.10".
+// Comma-separated addresses or CIDR ranges.
 function parseNetworks(value) {
   const networks = new net.BlockList();
   for (const entry of (value || '').split(',').map((part) => part.trim()).filter(Boolean)) {
@@ -51,8 +48,7 @@ function createGuard(allowedNetworks) {
     return internalNetworks.check(address, type) && !allowedNetworks.check(address, type);
   }
 
-  // Drop-in replacement for dns.lookup() that never returns a blocked address, so every
-  // connection goes to an address that was checked (there is no window for DNS rebinding).
+  // dns.lookup() that skips blocked addresses (no DNS rebinding).
   function lookup(hostname, options, callback) {
     dns.lookup(hostname, { ...options, all: true }, (error, addresses) => {
       if (error) {
@@ -96,8 +92,7 @@ function withoutHopByHopHeaders(headers) {
   return result;
 }
 
-// HTTP proxy for the browser. It forwards plain HTTP requests and tunnels everything else
-// (HTTPS, WebSockets) with CONNECT, refusing any destination inside an internal network.
+// HTTP proxy for the browser that refuses internal networks.
 function startProxy(guard, port) {
   function isBlockedTarget(host) {
     if (net.isIP(host) && guard.isBlocked(host)) {
