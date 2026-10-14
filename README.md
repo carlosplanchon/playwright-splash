@@ -27,5 +27,7 @@ Send the URL to `/scrape` with the token. Only http and https URLs are accepted.
 curl -X POST http://127.0.0.1:56572/scrape -H 'Authorization: Bearer <your-token>' -H 'Content-Type: application/json' -d '{"url": "https://example.com"}'
 ```
 
+The response body is the rendered HTML. The `X-Splash-Status` header has the HTTP status of the page (e.g. `404`) and `X-Splash-Url` its final URL, after redirects. The server answers 403 when the URL points to an internal network or redirects to one over plain HTTP.
+
 ### Tests:
 `npm test` runs the unit and integration tests (it needs Node.js 20 or later). The integration tests build the Docker image and run containers against local test pages, so they need Docker on Linux; they are skipped when Docker isn't available. `npm run test:unit` runs only the unit tests.

@@ -2,7 +2,7 @@ const { describe, it, before, after } = require('node:test');
 const assert = require('node:assert/strict');
 const { once } = require('node:events');
 const http = require('node:http');
-const { parseNetworks, createGuard, startProxy } = require('../proxy');
+const { blockedMarker, parseNetworks, createGuard, startProxy } = require('../proxy');
 
 describe('createGuard().isBlocked', () => {
   const guard = createGuard(parseNetworks(''));
@@ -133,6 +133,7 @@ describe('startProxy', () => {
     const res = await proxiedGet(await proxyWith(''), `http://127.0.0.1:${targetPort}/secret`);
     assert.equal(res.status, 403);
     assert.match(res.body, /internal network/);
+    assert.equal(res.headers['x-splash-blocked'], blockedMarker);
     assert.equal(received.length, before);
   });
 

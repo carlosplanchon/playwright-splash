@@ -1,6 +1,11 @@
+const crypto = require('crypto');
 const dns = require('dns');
 const http = require('http');
 const net = require('net');
+
+// Value of the X-Splash-Blocked header on the responses the proxy refuses. It is random so
+// that a page can't fake it.
+const blockedMarker = crypto.randomBytes(16).toString('hex');
 
 // Ranges that scraped pages must never reach: "this network", private networks, CGNAT,
 // loopback, link-local (cloud metadata), multicast, reserved and the IPv6 equivalents.
@@ -102,6 +107,11 @@ function startProxy(guard, port) {
     return false;
   }
 
+  function refuse(res, host) {
+    res.writeHead(403, { 'Content-Type': 'text/plain', 'X-Splash-Blocked': blockedMarker });
+    res.end(`Blocked by playwright-splash: ${host} is in an internal network.`);
+  }
+
   const server = http.createServer((req, res) => {
     let target;
     try {
@@ -114,7 +124,7 @@ function startProxy(guard, port) {
       return res.writeHead(400).end();
     }
     if (isBlockedTarget(host)) {
-      return res.writeHead(403).end(`Blocked by playwright-splash: ${host} is in an internal network.`);
+      return refuse(res, host);
     }
 
     const upstream = http.request({
@@ -136,7 +146,7 @@ function startProxy(guard, port) {
       }
       if (error.code === 'ERR_INTERNAL_NETWORK') {
         console.log("-> Blocked request to an internal network:", host)
-        return res.writeHead(403).end(`Blocked by playwright-splash: ${host} is in an internal network.`);
+        return refuse(res, host);
       }
       res.writeHead(502).end();
     });
@@ -188,4 +198,4 @@ function startProxy(guard, port) {
   return server;
 }
 
-module.exports = { parseNetworks, createGuard, startProxy };
+module.exports = { blockedMarker, parseNetworks, createGuard, startProxy };

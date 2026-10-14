@@ -2,9 +2,9 @@ const crypto = require('crypto');
 const express = require('express');
 const { chromium } = require('playwright-extra');
 const { PlaywrightBlocker, adsAndTrackingLists } = require('@ghostery/adblocker-playwright');
-const randomAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36';
+const userAgent = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/111.0.0.0 Safari/537.36';
 const stealth = require('puppeteer-extra-plugin-stealth')();
-const { parseNetworks, createGuard, startProxy } = require('./proxy');
+const { blockedMarker, parseNetworks, createGuard, startProxy } = require('./proxy');
 
 function positiveIntegerFromEnv(name, defaultValue) {
   const value = Number(process.env[name] || defaultValue);
@@ -173,23 +173,28 @@ async function loadPage(context, url) {
     await blocker.enableBlockingInPage(page);
   }
 
-  await page.setDefaultNavigationTimeout(0);
-
-  await page.goto(url, {
+  const response = await page.goto(url, {
     timeout: 60000,
     waitUntil: 'load',
     referer: 'https://www.google.com/'
   });
 
+  // The proxy refused the page itself, typically because a redirect led to an internal network.
+  if (response && response.headers()['x-splash-blocked'] === blockedMarker) {
+    const error = new Error('The url or one of its redirects points to an internal network.');
+    error.status = 403;
+    throw error;
+  }
+
   await page.setViewportSize({ width: 1600, height: 10000 });
   await autoScroll(page);
 
-  return page.content();
+  return { content: await page.content(), status: response && response.status(), url: page.url() };
 }
 
 async function scrape(url) {
   const browser = await getBrowser();
-  const context = await browser.newContext({ userAgent: randomAgent });
+  const context = await browser.newContext({ userAgent });
 
   try {
     return await withTimeout(loadPage(context, url), requestTimeout);
@@ -211,11 +216,15 @@ app.post('/scrape', async (req, res) => {
     }
 
     console.log("-> URL:", url)
-    const content = await withPageSlot(() => scrape(url));
+    const result = await withPageSlot(() => scrape(url));
     console.log("· Sending response.")
-    res.send(content);
+    if (result.status) {
+      res.set('X-Splash-Status', String(result.status));
+    }
+    res.set('X-Splash-Url', result.url);
+    res.send(result.content);
   } catch (error) {
-    res.status(500).send(error.message);
+    res.status(error.status || 500).send(error.message);
   }
 });
 

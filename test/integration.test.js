@@ -156,6 +156,10 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
         res.writeHead(302, { Location: url.searchParams.get('to') });
         return res.end();
       }
+      if (url.pathname === '/spoof-blocked') {
+        res.writeHead(200, { 'Content-Type': 'text/html', 'X-Splash-Blocked': 'not-the-marker' });
+        return res.end('<p>spoofed</p>');
+      }
       const file = path.join(pagesDir, path.normalize(url.pathname));
       fs.readFile(file, (error, data) => {
         if (error || !file.startsWith(pagesDir)) {
@@ -208,6 +212,26 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
         assert.equal(res.headers.get('www-authenticate'), 'Bearer');
       }
       assert.equal((await scrape(container, `${pagesUrl}/ok.html`)).status, 200);
+    });
+
+    it('reports the status and final URL of the page in headers', slow, async () => {
+      const ok = await scrape(container, `${pagesUrl}/ok.html`);
+      assert.equal(ok.headers.get('x-splash-status'), '200');
+      assert.equal(ok.headers.get('x-splash-url'), `${pagesUrl}/ok.html`);
+
+      const missing = await scrape(container, `${pagesUrl}/missing.html`);
+      assert.equal(missing.status, 200);
+      assert.equal(missing.headers.get('x-splash-status'), '404');
+
+      const redirected = await scrape(container, `${pagesUrl}/redirect?to=${encodeURIComponent('/ok.html')}`);
+      assert.equal(redirected.headers.get('x-splash-status'), '200');
+      assert.equal(redirected.headers.get('x-splash-url'), `${pagesUrl}/ok.html`);
+    });
+
+    it('ignores X-Splash-Blocked headers sent by pages', slow, async () => {
+      const res = await scrape(container, `${pagesUrl}/spoof-blocked`);
+      assert.equal(res.status, 200);
+      assert.match(res.body, /spoofed/);
     });
 
     it('only accepts http and https URLs', slow, async () => {
@@ -367,6 +391,13 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
         assert.equal(res.status, 403, url);
         assert.match(res.body, /internal network/);
       }
+    });
+
+    it('answers 403 when a redirect leads to an internal network', slow, async () => {
+      const container = await startContainer();
+      const res = await scrape(container, `${pagesUrl}/redirect?to=${encodeURIComponent('http://127.0.0.1:9999/')}`);
+      assert.equal(res.status, 403);
+      assert.match(res.body, /redirects points to an internal network/);
     });
 
     it('blocks redirects, subresources, WebSockets and WebRTC that reach for internal networks', slow, async () => {
