@@ -8,7 +8,7 @@ https://hub.docker.com/r/carlosplanchon/playwright_splash
 ### Running Playwright Splash:
 To run Playwright Splash, use the following command:
 ```
-docker run -it --rm --init --ipc=host --security-opt seccomp=seccomp_profile.json -e SPLASH_TOKEN=<your-token> -p 127.0.0.1:56572:56572 carlosplanchon/playwright_splash
+docker run -it --rm --init --security-opt seccomp=seccomp_profile.json -e SPLASH_TOKEN=<your-token> -p 127.0.0.1:56572:56572 carlosplanchon/playwright_splash
 ```
 
 `SPLASH_TOKEN` is required: the server refuses to start without it. You can generate one with `openssl rand -hex 32`. The port is only published on 127.0.0.1; change `-p` if other machines need to reach the server.

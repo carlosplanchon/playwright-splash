@@ -56,7 +56,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       ...env,
     };
     return [
-      '--init', '--ipc=host', '--security-opt', `seccomp=${path.join(root, 'seccomp_profile.json')}`,
+      '--init', '--security-opt', `seccomp=${path.join(root, 'seccomp_profile.json')}`,
       '-v', `${fixturesDir}:/fixtures:ro`,
       ...Object.entries(variables).filter(([, value]) => value !== undefined).flatMap(([key, value]) => ['-e', `${key}=${value}`]),
     ];
