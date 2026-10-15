@@ -23,6 +23,8 @@ Each page gets up to 120 seconds in total. Once its HTML has loaded, the server 
 
 The browser announces English as its language, like a regular Chrome (`Accept-Language: en-US,en;q=0.9`). Set `SPLASH_LOCALE` (e.g. `-e SPLASH_LOCALE=es-UY`) to put another language first, with English as a fallback; some websites use it to pick the language of their content.
 
+Ads and trackers are blocked with Ghostery's adblocker (https://github.com/ghostery/adblocker). The server downloads its filter lists from GitHub when it starts and updates them once a day. If the first download fails, pages are rendered without blocking ads and the next request tries again; if an update fails, the server keeps the lists it has.
+
 Pages can't reach internal networks (loopback, private ranges, link-local addresses such as cloud metadata endpoints, etc.). The server answers 403 when the URL points to one, and all the browser's traffic goes through an internal proxy that also blocks them in redirects, subresources and WebSockets. To allow specific internal networks, set `SPLASH_ALLOWED_NETWORKS` to a comma-separated list of addresses or CIDR ranges (e.g. `-e SPLASH_ALLOWED_NETWORKS=10.1.2.0/24,192.168.1.10`).
 
 Please note that this command needs the seccomp_profile.json file from this repository, because Chrome runs with its sandbox enabled. It is Docker's default seccomp profile (https://github.com/moby/profiles/blob/main/seccomp/default.json) plus the user namespace rule that Playwright adds to its own profile (https://playwright.dev/docs/docker). Playwright's profile itself makes containers fail to start with recent Docker versions (tested with Docker 29.9 and runc 1.5.2).

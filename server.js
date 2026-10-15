@@ -19,6 +19,7 @@ const proxyPort = 56573;
 const navigationTimeout = 60000;
 const maxNavigations = 5;
 const lazyContentTimeout = 3000;
+const listsUpdateInterval = 24 * 60 * 60 * 1000;
 const token = process.env.SPLASH_TOKEN;
 
 if (!token) {
@@ -125,16 +126,29 @@ function fetchList(url) {
   });
 }
 
+function loadBlocker() {
+  // Network filters only: cosmetic ones inject styles into the HTML.
+  return PlaywrightBlocker.fromLists(fetchList, adsAndTrackingLists, { loadCosmeticFilters: false });
+}
+
 function getBlocker() {
   if (!blockerPromise) {
-    // Network filters only: cosmetic ones inject styles into the HTML.
-    blockerPromise = PlaywrightBlocker.fromLists(fetchList, adsAndTrackingLists, { loadCosmeticFilters: false }).catch((error) => {
+    blockerPromise = loadBlocker().catch((error) => {
       console.log("-> Could not load the adblocker:", error.message)
       blockerPromise = undefined;
       return null;
     });
   }
   return blockerPromise;
+}
+
+// Pages keep using the old lists until the new ones have loaded.
+function updateBlocker() {
+  loadBlocker().then((blocker) => {
+    blockerPromise = Promise.resolve(blocker);
+  }, (error) => {
+    console.log("-> Could not update the adblock lists:", error.message)
+  });
 }
 
 async function withPageSlot(fn) {
@@ -381,6 +395,9 @@ const server = app.listen(port, '0.0.0.0', (error) => {
     process.exit(1);
   }
   console.log(`Server listening at http://localhost:${port}`);
+  // Loads the adblocker before the first request and keeps its lists up to date.
+  getBlocker();
+  setInterval(updateBlocker, listsUpdateInterval).unref();
 });
 
 process.on('SIGTERM', () => {

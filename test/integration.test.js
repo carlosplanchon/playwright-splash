@@ -434,6 +434,12 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       assert.match(await logs(container), /Could not load the adblocker: \S+ answered 429/);
     });
 
+    it('loads the adblock lists when it starts', slow, async () => {
+      // Without any request, the failure shows that it tried.
+      const container = await startContainer({ NODE_OPTIONS: '--require /fixtures/break-fetch.js' });
+      await waitFor(async () => (await logs(container)).includes('Could not load the adblocker'), 10000, 'the adblock lists');
+    });
+
     it('renders at most SPLASH_MAX_PAGES pages at a time', slow, async () => {
       const container = await startContainer({ SPLASH_MAX_PAGES: '2' });
       await scrape(container, `${pagesUrl}/ok.html`);
