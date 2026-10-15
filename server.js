@@ -1,8 +1,7 @@
 const crypto = require('crypto');
 const express = require('express');
-const { chromium } = require('playwright-extra');
+const { chromium } = require('patchright');
 const { PlaywrightBlocker, adsAndTrackingLists } = require('@ghostery/adblocker-playwright');
-const stealth = require('puppeteer-extra-plugin-stealth')();
 const { blockedMarker, parseNetworks, createGuard, startProxy } = require('./proxy');
 
 function positiveIntegerFromEnv(name, defaultValue) {
@@ -78,13 +77,6 @@ app.use((req, res, next) => {
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
-// Same languages in Accept-Language and navigator.languages.
-stealth.enabledEvasions.delete('navigator.languages');
-stealth.enabledEvasions.delete('user-agent-override');
-chromium.use(stealth);
-chromium.use(require('puppeteer-extra-plugin-stealth/evasions/navigator.languages')({ languages }));
-chromium.use(require('puppeteer-extra-plugin-stealth/evasions/user-agent-override')({ locale: languages.join(',') }));
-
 let browserPromise;
 let blockerPromise;
 let activePages = 0;
@@ -96,22 +88,24 @@ function getBrowser() {
     return Promise.reject(new Error('The server is shutting down.'));
   }
   if (!browserPromise) {
-    console.log("-> Launching Chromium.")
+    console.log("-> Launching Chrome.")
     browserPromise = chromium.launch({
-      // Explicit so that stealth sends Accept-Language.
-      headless: true,
+      // Google Chrome with a real window (on Xvfb), like a regular browser.
+      channel: 'chrome',
+      headless: false,
       chromiumSandbox: true,
       // Everything goes through the proxy; the flags close the bypasses.
       proxy: { server: `http://127.0.0.1:${proxyPort}` },
       args: [
         '--disable-quic',
-        '--force-webrtc-ip-handling-policy=disable_non_proxied_udp',
         '--host-resolver-rules=MAP * ~NOTFOUND, EXCLUDE 127.0.0.1',
+        `--accept-lang=${languages.join(',')}`,
+        '--window-size=1920,1080',
       ],
     });
     browserPromise.then((browser) => {
       browser.on('disconnected', () => {
-        console.log("-> Chromium disconnected.")
+        console.log("-> Chrome disconnected.")
         browserPromise = undefined;
       });
     }, () => {
@@ -225,8 +219,10 @@ function trackNavigations(page) {
     }
   });
   page.on('requestfailed', (request) => {
-    if (isMainFrame(request)) {
-      navigations.failure = `${request.failure().errorText} at ${request.url()}`;
+    const { errorText } = request.failure();
+    // Chrome reports HTTP errors without a body as failures, but they have a response.
+    if (isMainFrame(request) && errorText !== 'net::ERR_HTTP_RESPONSE_CODE_FAILURE') {
+      navigations.failure = `${errorText} at ${request.url()}`;
     }
   });
   return navigations;
@@ -245,7 +241,6 @@ async function readPage(page, navigations) {
     }
 
     try {
-      await page.setViewportSize({ width: 1600, height: 10000 });
       await autoScroll(page);
       const content = await page.content();
       if (!navigated()) {
@@ -268,19 +263,29 @@ async function loadPage(context, url) {
   }
 
   const navigations = trackNavigations(page);
-  await page.goto(url, { timeout: navigationTimeout, waitUntil: 'domcontentloaded' });
+  try {
+    await page.goto(url, { timeout: navigationTimeout, waitUntil: 'domcontentloaded' });
+  } catch (error) {
+    if (!navigations.response || !error.message.includes('ERR_HTTP_RESPONSE_CODE_FAILURE')) {
+      throw error;
+    }
+  }
   const content = await readPage(page, navigations);
 
-  if (page.url().startsWith('chrome-error://')) {
-    throw new Error(navigations.failure || 'The page navigated to an address that could not be loaded.');
-  }
-
   // The proxy refused the page (a redirect to an internal network).
-  const { response } = navigations;
+  const { response, failure } = navigations;
   if (response && response.headers()['x-splash-blocked'] === blockedMarker) {
     const error = new Error('The url or one of its redirects points to an internal network.');
     error.status = 403;
     throw error;
+  }
+
+  // Chrome shows its own page for network errors and for HTTP errors without a body.
+  if (page.url().startsWith('chrome-error://')) {
+    if (failure || !response) {
+      throw new Error(failure || 'The page navigated to an address that could not be loaded.');
+    }
+    return { content: await response.text().catch(() => ''), status: response.status(), url: response.url() };
   }
 
   return { content, status: response && response.status(), url: page.url() };
@@ -289,7 +294,7 @@ async function loadPage(context, url) {
 async function scrape(url, signal) {
   signal.throwIfAborted();
   const browser = await getBrowser();
-  const context = await browser.newContext({ locale });
+  const context = await browser.newContext({ viewport: null });
 
   try {
     return await withTimeout(loadPage(context, url), requestTimeout, signal);
@@ -348,9 +353,8 @@ process.on('SIGTERM', () => {
   shuttingDown = true;
   server.close();
   proxyServer.close();
-  if (browserPromise) {
-    browserPromise.then((browser) => browser.close()).catch(() => {});
-  }
+  const closed = browserPromise ? browserPromise.then((browser) => browser.close()) : Promise.resolve();
+  closed.catch(() => {}).then(() => process.exit(0));
   // Exit before Docker's 10 s stop timeout.
   setTimeout(() => process.exit(0), 5000).unref();
 });

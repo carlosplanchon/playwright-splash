@@ -1,9 +1,13 @@
 # playwright_splash
 Simple Playwright scraper which receives an URL and returns the website code.
 
+Pages are rendered by Google Chrome with a regular window on a virtual display (Xvfb), driven by Patchright (https://github.com/kaliiiiiiiiii-vinyzu/patchright-nodejs), a Playwright fork that hides the automation. Websites see a regular Chrome, not a headless browser.
+
 ### Docker Image:
 The Docker image for Playwright Splash can be found at
 https://hub.docker.com/r/carlosplanchon/playwright_splash
+
+The image only runs on amd64 (x86-64) machines, because Google Chrome isn't published for Linux on ARM. Building it installs the current stable version of Google Chrome; build it with `--no-cache` to update the browser.
 
 ### Running Playwright Splash:
 To run Playwright Splash, use the following command:
@@ -17,11 +21,11 @@ At most 4 pages are rendered at the same time and the other requests wait for th
 
 Each page gets up to 120 seconds in total. Once its HTML has loaded, the server waits up to 10 seconds for images and other resources (if they take longer, it reads the page anyway) and then spends up to 30 seconds scrolling to load lazy content. Set `SPLASH_REQUEST_TIMEOUT`, `SPLASH_LOAD_TIMEOUT` and `SPLASH_SCROLL_TIMEOUT` (in milliseconds) to change them.
 
-The browser announces English as its language, like a regular Chrome (`Accept-Language: en-US,en;q=0.9`). Set `SPLASH_LOCALE` (e.g. `-e SPLASH_LOCALE=es-UY`) to change it; some websites use it to pick the language of their content.
+The browser announces English as its language, like a regular Chrome (`Accept-Language: en-US,en;q=0.9`). Set `SPLASH_LOCALE` (e.g. `-e SPLASH_LOCALE=es-UY`) to put another language first, with English as a fallback; some websites use it to pick the language of their content.
 
 Pages can't reach internal networks (loopback, private ranges, link-local addresses such as cloud metadata endpoints, etc.). The server answers 403 when the URL points to one, and all the browser's traffic goes through an internal proxy that also blocks them in redirects, subresources and WebSockets. To allow specific internal networks, set `SPLASH_ALLOWED_NETWORKS` to a comma-separated list of addresses or CIDR ranges (e.g. `-e SPLASH_ALLOWED_NETWORKS=10.1.2.0/24,192.168.1.10`).
 
-Please note that this command needs the seccomp_profile.json file from this repository, because Chromium runs with its sandbox enabled. It is Docker's default seccomp profile (https://github.com/moby/profiles/blob/main/seccomp/default.json) plus the user namespace rule that Playwright adds to its own profile (https://playwright.dev/docs/docker). Playwright's profile itself makes containers fail to start with recent Docker versions (tested with Docker 29.9 and runc 1.5.2).
+Please note that this command needs the seccomp_profile.json file from this repository, because Chrome runs with its sandbox enabled. It is Docker's default seccomp profile (https://github.com/moby/profiles/blob/main/seccomp/default.json) plus the user namespace rule that Playwright adds to its own profile (https://playwright.dev/docs/docker). Playwright's profile itself makes containers fail to start with recent Docker versions (tested with Docker 29.9 and runc 1.5.2).
 
 ### Usage:
 Send the URL to `/scrape` with the token. Only http and https URLs are accepted.
@@ -32,4 +36,4 @@ curl -X POST http://127.0.0.1:56572/scrape -H 'Authorization: Bearer <your-token
 The response body is the rendered HTML. The `X-Splash-Status` header has the HTTP status of the page (e.g. `404`) and `X-Splash-Url` its final URL, after redirects, including the ones the page does by itself (meta refresh, JavaScript). The server answers 403 when the URL points to an internal network or redirects to one over plain HTTP.
 
 ### Tests:
-`npm test` runs the unit and integration tests (it needs Node.js 20 or later). The integration tests build the Docker image and run containers against local test pages, so they need Docker on Linux; they are skipped when Docker isn't available. `npm run test:unit` runs only the unit tests.
+`npm test` runs the unit and integration tests (it needs Node.js 20 or later). The integration tests build the Docker image and run containers against local test pages, so they need Docker on Linux (amd64); they are skipped when Docker isn't available. `npm run test:unit` runs only the unit tests.

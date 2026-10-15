@@ -40,6 +40,7 @@ async function waitFor(condition, timeout, message) {
 describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Docker is not available' }, () => {
   const containers = [];
   const pageRequests = [];
+  const slowRequests = { open: 0, max: 0 };
   let gateway;
   let pagesUrl;
   let pageServer;
@@ -108,12 +109,13 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
     });
   }
 
-  const renderers = async (container) => (await processes(container)).filter(({ args }) => args.includes('--type=renderer'));
-  // Renderers take a moment to exit after their page closes.
-  const noPagesLeft = (container) => waitFor(async () => (await renderers(container)).length === 0, 5000, 'pages to be closed');
+  const renderers = async (container) => (await processes(container))
+    .filter(({ args }) => args.includes('--type=renderer') && !args.includes('--extension-process'));
+  // Renderers take a moment to exit after their page closes, and Chrome keeps a spare one.
+  const noPagesLeft = (container) => waitFor(async () => (await renderers(container)).length <= 1, 5000, 'pages to be closed');
   const browserProcess = async (container) => (await processes(container))
     .find(({ args }) => args.includes('--remote-debugging-pipe') && !args.includes('--type='));
-  const launches = async (container) => (await logs(container)).split('-> Launching Chromium.').length - 1;
+  const launches = async (container) => (await logs(container)).split('-> Launching Chrome.').length - 1;
 
   async function isRunning(container) {
     const { stdout } = await run('docker', ['inspect', '-f', '{{.State.Running}}', container.name]);
@@ -152,6 +154,12 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       pageRequests.push(req.url);
       const url = new URL(req.url, 'http://pages');
       if (url.pathname === '/hang') {
+        return;
+      }
+      if (url.pathname === '/slow') {
+        slowRequests.open++;
+        slowRequests.max = Math.max(slowRequests.max, slowRequests.open);
+        res.on('close', () => slowRequests.open--);
         return;
       }
       if (url.pathname === '/headers') {
@@ -335,7 +343,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       assert.ok(await isRunning(container));
     });
 
-    it('keeps the stealth evasions', slow, async () => {
+    it('does not expose navigator.webdriver', slow, async () => {
       const res = await scrape(container, `${pagesUrl}/stealth.html`);
       const json = res.body.match(/<pre id="out">([^<]*)<\/pre>/)[1].replace(/&quot;/g, '"').replace(/&amp;/g, '&');
       assert.equal(JSON.parse(json).webdriver, false);
@@ -351,13 +359,13 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       assert.equal(english.headers['accept-language'], 'en-US,en;q=0.9');
       assert.deepEqual(english.languages, ['en-US', 'en']);
       assert.equal(english.headers.referer, undefined);
-      assert.match(english.headers['user-agent'], /\(Windows NT 10\.0; Win64; x64\).*Chrome\/\d+/);
+      assert.match(english.headers['user-agent'], /\(X11; Linux x86_64\).* Chrome\/\d+/);
       const spanish = await read(await startContainer({ SPLASH_LOCALE: 'es-UY' }));
-      assert.equal(spanish.headers['accept-language'], 'es-UY,es;q=0.9');
-      assert.deepEqual(spanish.languages, ['es-UY', 'es']);
+      assert.match(spanish.headers['accept-language'], /^es-UY,es;q=0\.9/);
+      assert.equal(spanish.languages[0], 'es-UY');
     });
 
-    it('runs Chromium as pwuser with its sandbox enabled', slow, async () => {
+    it('runs Chrome as pwuser with its sandbox enabled', slow, async () => {
       const request = scrape(container, `${pagesUrl}/tall.html`);
       await waitFor(async () => (await renderers(container)).length > 0, 10000, 'a renderer');
       const [renderer] = await renderers(container);
@@ -374,7 +382,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
   });
 
   describe('resilience', () => {
-    it('relaunches Chromium when it dies', slow, async () => {
+    it('relaunches Chrome when it dies', slow, async () => {
       const container = await startContainer();
       assert.equal((await scrape(container, `${pagesUrl}/ok.html`)).status, 200);
       await run('docker', ['exec', container.name, 'kill', '-9', (await browserProcess(container)).pid]);
@@ -383,19 +391,19 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       assert.equal(await launches(container), 2);
     });
 
-    it('launches Chromium once for concurrent first requests', slow, async () => {
+    it('launches Chrome once for concurrent first requests', slow, async () => {
       const container = await startContainer();
       const responses = await Promise.all([1, 2, 3].map(() => scrape(container, `${pagesUrl}/ok.html`)));
       assert.deepEqual(responses.map(({ status }) => status), [200, 200, 200]);
       assert.equal(await launches(container), 1);
     });
 
-    it('keeps running when Chromium cannot start', slow, async () => {
-      const container = await startContainer({ PLAYWRIGHT_BROWSERS_PATH: '/nonexistent' });
+    it('keeps running when Chrome cannot start', slow, async () => {
+      const container = await startContainer({ DISPLAY: ':7' });
       for (let i = 0; i < 2; i++) {
         const res = await scrape(container, `${pagesUrl}/ok.html`);
         assert.equal(res.status, 500);
-        assert.match(res.body, /Executable doesn't exist/);
+        assert.match(res.body, /launched a headed browser without having a XServer running/);
       }
       assert.ok(await isRunning(container));
     });
@@ -416,16 +424,11 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
     it('renders at most SPLASH_MAX_PAGES pages at a time', slow, async () => {
       const container = await startContainer({ SPLASH_MAX_PAGES: '2' });
       await scrape(container, `${pagesUrl}/ok.html`);
-      let done = false;
-      let maxRenderers = 0;
-      const requests = Promise.all([1, 2, 3, 4, 5, 6].map(() => scrape(container, `${pagesUrl}/tall.html`)))
-        .finally(() => { done = true; });
-      while (!done) {
-        maxRenderers = Math.max(maxRenderers, (await renderers(container)).length);
-        await sleep(200);
-      }
-      assert.deepEqual((await requests).map(({ status }) => status), [200, 200, 200, 200, 200, 200]);
-      assert.ok(maxRenderers >= 1 && maxRenderers <= 2, `saw ${maxRenderers} renderers`);
+      slowRequests.max = 0;
+      const responses = await Promise.all([1, 2, 3, 4, 5, 6].map(() => scrape(container, `${pagesUrl}/slow.html`)));
+      assert.deepEqual(responses.map(({ status }) => status), [200, 200, 200, 200, 200, 200]);
+      // Each page keeps a request to /slow open while it is rendered.
+      assert.equal(slowRequests.max, 2);
     });
 
     it('drops queued requests whose client went away', slow, async () => {
@@ -447,7 +450,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       await scrape(container, `${pagesUrl}/ok.html`);
       const gone = await scrape(container, `${pagesUrl}/tall.html`, { timeout: 1500 }).catch((error) => error.name);
       assert.equal(gone, 'TimeoutError');
-      await waitFor(async () => (await renderers(container)).length === 0, 3000, 'the page to be closed');
+      await waitFor(async () => (await renderers(container)).length <= 1, 3000, 'the page to be closed');
       assert.match(await logs(container), /The client went away: .*\/tall\.html/);
     });
 
@@ -494,6 +497,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
 
     it('blocks redirects, subresources, WebSockets and WebRTC that reach for internal networks', slow, async () => {
       const container = await startContainer();
+      await scrape(container, `${pagesUrl}/ok.html`);
       await startVictim(container);
       for (const url of [
         `${pagesUrl}/redirect?to=${encodeURIComponent('http://127.0.0.1:9999/redirect')}`,
@@ -510,6 +514,7 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
 
     it('lets pages reach internal networks listed in SPLASH_ALLOWED_NETWORKS', slow, async () => {
       const container = await startContainer({ SPLASH_ALLOWED_NETWORKS: `${gateway}/32,127.0.0.0/8` });
+      await scrape(container, `${pagesUrl}/ok.html`);
       await startVictim(container);
       await scrape(container, `${pagesUrl}/ssrf-sub.html`);
       await sleep(500);
