@@ -18,6 +18,7 @@ const port = 56572;
 const proxyPort = 56573;
 const navigationTimeout = 60000;
 const maxNavigations = 5;
+const lazyContentTimeout = 3000;
 const token = process.env.SPLASH_TOKEN;
 
 if (!token) {
@@ -177,7 +178,7 @@ async function autoScroll(page){
     await page.evaluate(async (timeout) => {
         await new Promise((resolve, reject) => {
             var totalHeight = 0;
-            var distance = 100;
+            var distance = window.innerHeight || 100;
             var start = Date.now();
             var timer = setInterval(() => {
                 // document.body is null in non-HTML documents (e.g. SVG).
@@ -205,7 +206,8 @@ function trackNavigations(page) {
   };
 
   page.on('request', (request) => {
-    if (isMainFrame(request) && !request.redirectedFrom()) {
+    // Chrome's error pages retry the failed navigation by themselves; that is not a redirect.
+    if (isMainFrame(request) && !request.redirectedFrom() && !page.url().startsWith('chrome-error://')) {
       navigations.started++;
       navigations.committed = page.waitForEvent('framenavigated', {
         predicate: (frame) => frame === page.mainFrame(),
@@ -228,8 +230,33 @@ function trackNavigations(page) {
   return navigations;
 }
 
+// The page's scripts and fetches that are still loading: they can change its HTML.
+function trackRequests(page) {
+  const requests = new Set();
+  page.on('request', (request) => {
+    if (['script', 'fetch', 'xhr'].includes(request.resourceType()) && request.frame() === page.mainFrame()) {
+      requests.add(request);
+    }
+  });
+  page.on('requestfinished', (request) => requests.delete(request));
+  page.on('requestfailed', (request) => requests.delete(request));
+  return requests;
+}
+
+// Waits until the page has not loaded scripts or fetches for a second.
+async function waitForRequests(page, requests, deadline) {
+  let quietSince = Date.now();
+  while (Date.now() - quietSince < 1000 && Date.now() < deadline && !page.isClosed()) {
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    if (requests.size > 0) {
+      quietSince = Date.now();
+    }
+  }
+}
+
 // Follows the redirects that the page does by itself.
 async function readPage(page, navigations) {
+  const requests = trackRequests(page);
   for (let i = 0; ; i++) {
     const started = navigations.started;
     const navigated = () => navigations.started !== started && i < maxNavigations;
@@ -239,9 +266,17 @@ async function readPage(page, navigations) {
     if (navigated()) {
       continue;
     }
+    // Chrome's error pages have nothing to load.
+    if (page.url().startsWith('chrome-error://')) {
+      return page.content();
+    }
 
     try {
+      const scrollDeadline = Date.now() + scrollTimeout;
+      requests.clear();
       await autoScroll(page);
+      // The lazy content that the scroll requested.
+      await waitForRequests(page, requests, Math.min(scrollDeadline, Date.now() + lazyContentTimeout));
       const content = await page.content();
       if (!navigated()) {
         return content;

@@ -1,0 +1,5 @@
+<!doctype html>
+<html><body><p>lazy</p><div style="height:3000px"></div><div id="lazy"></div>
+<script>
+addEventListener('scroll', () => fetch('/lazy?delay=1500').then((res) => res.text()).then((text) => { document.getElementById('lazy').textContent = text; }), { once: true });
+</script></body></html>

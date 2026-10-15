@@ -173,6 +173,12 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
           res.end();
         }, Number(url.searchParams.get('delay') || 0));
       }
+      if (url.pathname === '/lazy') {
+        return setTimeout(() => {
+          res.writeHead(200, { 'Content-Type': 'text/plain' });
+          res.end('lazy content');
+        }, Number(url.searchParams.get('delay') || 0));
+      }
       if (url.pathname === '/spoof-blocked') {
         res.writeHead(200, { 'Content-Type': 'text/html', 'X-Splash-Blocked': 'not-the-marker' });
         return res.end('<p>spoofed</p>');
@@ -303,6 +309,12 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       const res = await scrape(container, `${pagesUrl}/infinite.html`);
       assert.equal(res.status, 200);
       assert.ok(Date.now() - start < 9000, `took ${Date.now() - start} ms`);
+    });
+
+    it('waits for the content that the scroll requests', slow, async () => {
+      const res = await scrape(container, `${pagesUrl}/lazy.html`);
+      assert.equal(res.status, 200);
+      assert.match(res.body, /<div id="lazy">lazy content<\/div>/);
     });
 
     it('gives up on frozen pages after SPLASH_REQUEST_TIMEOUT', slow, async () => {
