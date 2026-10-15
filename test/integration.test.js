@@ -404,7 +404,8 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
     });
 
     it('launches Chrome once for concurrent first requests', slow, async () => {
-      const container = await startContainer();
+      // The first requests also load the adblocker lists.
+      const container = await startContainer({ SPLASH_REQUEST_TIMEOUT: '30000' });
       const responses = await Promise.all([1, 2, 3].map(() => scrape(container, `${pagesUrl}/ok.html`)));
       assert.deepEqual(responses.map(({ status }) => status), [200, 200, 200]);
       assert.equal(await launches(container), 1);
