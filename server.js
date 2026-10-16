@@ -362,7 +362,7 @@ function fileTooLarge() {
 }
 
 // Fetches the file again from its own page.
-async function fetchFromPage(page, url) {
+async function fetchAgain(page, url) {
   const base64 = await page.evaluate(async ([url, maxSize]) => {
     const stream = (await fetch(url)).body.getReader();
     const chunks = [];
@@ -380,11 +380,16 @@ async function fetchFromPage(page, url) {
       reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(',') + 1));
       reader.readAsDataURL(new Blob(chunks));
     });
-  }, [url, maxFileSize]);
+  }, [url, maxFileSize]).catch(() => undefined);
   if (base64 === null) {
     throw fileTooLarge();
   }
-  return Buffer.from(base64, 'base64');
+  if (base64 !== undefined) {
+    return Buffer.from(base64, 'base64');
+  }
+  // The page's Content-Security-Policy can forbid it; Playwright's requests share its cookies and proxy.
+  const response = await page.context().request.get(url, { timeout: 0 });
+  return response.body();
 }
 
 async function readFile(page, response) {
@@ -394,7 +399,7 @@ async function readFile(page, response) {
   // Chrome hands PDFs, video and audio to its viewers, which take over the response.
   const type = mimeType(response);
   const viewed = type === 'application/pdf' || type.startsWith('video/') || type.startsWith('audio/');
-  const body = viewed ? await fetchFromPage(page, response.url()) : await response.body();
+  const body = viewed ? await fetchAgain(page, response.url()) : await response.body();
   if (body.length > maxFileSize) {
     throw fileTooLarge();
   }

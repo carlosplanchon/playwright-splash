@@ -190,7 +190,8 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
         return res.end('a,b\n1,2\n');
       }
       if (url.pathname === '/video.mp4') {
-        res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': '10000' });
+        const csp = url.searchParams.has('csp') ? { 'Content-Security-Policy': "default-src 'none'" } : {};
+        res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': '10000', ...csp });
         return res.end(Buffer.alloc(10000, 7));
       }
       if (url.pathname === '/huge.bin') {
@@ -341,9 +342,11 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
         assert.equal(res.headers.get('x-splash-status'), '200');
         assert.equal(res.body, fs.readFileSync(path.join(pagesDir, file), 'utf8'));
       }
-      const video = await scrape(container, `${pagesUrl}/video.mp4`);
-      assert.equal(video.headers.get('content-type'), 'video/mp4');
-      assert.equal(video.body, '\x07'.repeat(10000));
+      for (const query of ['', '?csp']) {
+        const video = await scrape(container, `${pagesUrl}/video.mp4${query}`);
+        assert.equal(video.headers.get('content-type'), 'video/mp4', query);
+        assert.equal(video.body, '\x07'.repeat(10000), query);
+      }
     });
 
     it('returns the files that the browser downloads', slow, async () => {
