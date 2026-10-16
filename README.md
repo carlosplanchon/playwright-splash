@@ -1,5 +1,5 @@
 # playwright_splash
-Simple Playwright scraper which receives an URL and returns the website code.
+Simple Playwright scraper which receives a URL and returns the website code.
 
 Pages are rendered by Google Chrome with a regular window on a virtual display (Xvfb), driven by Patchright (https://github.com/kaliiiiiiiiii-vinyzu/patchright-nodejs), a Playwright fork that hides the automation. Websites see a regular Chrome, not a headless browser.
 
@@ -15,21 +15,33 @@ To run Playwright Splash, use the following command:
 docker run -it --rm --init --security-opt seccomp=seccomp_profile.json -e SPLASH_TOKEN=<your-token> -p 127.0.0.1:56572:56572 carlosplanchon/playwright_splash
 ```
 
+This command needs the seccomp_profile.json file from this repository, because Chrome runs with its sandbox enabled. It is Docker's default seccomp profile (https://github.com/moby/profiles/blob/main/seccomp/default.json) plus the user namespace rule that Playwright adds to its own profile (https://playwright.dev/docs/docker). Playwright's profile itself makes containers fail to start with recent Docker versions (tested with Docker 29.9 and runc 1.5.2).
+
 `SPLASH_TOKEN` is required: the server refuses to start without it. You can generate one with `openssl rand -hex 32`. The port is only published on 127.0.0.1; change `-p` if other machines need to reach the server.
 
-At most 4 pages are rendered at the same time and the other requests wait for their turn. Set `SPLASH_MAX_PAGES` (e.g. `-e SPLASH_MAX_PAGES=8`) to change that limit. When a client disconnects, its request is dropped: if it was waiting, its page is never opened, and if it was rendering, its page is closed right away.
+The server reads these environment variables (e.g. `-e SPLASH_MAX_PAGES=8`):
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `SPLASH_TOKEN` | (required) | Token that clients send as `Authorization: Bearer <token>`. |
+| `SPLASH_MAX_PAGES` | `4` | Pages rendered at the same time. |
+| `SPLASH_REQUEST_TIMEOUT` | `120000` | Milliseconds that each page gets in total. |
+| `SPLASH_LOAD_TIMEOUT` | `10000` | Milliseconds to wait for images and other resources once the HTML has loaded. |
+| `SPLASH_SCROLL_TIMEOUT` | `30000` | Milliseconds to spend loading lazy content. |
+| `SPLASH_LOCALE` | `en-US` | Language that the browser puts first. |
+| `SPLASH_ALLOWED_NETWORKS` | (none) | Internal networks that pages may reach, as a comma-separated list of addresses or CIDR ranges. |
+
+At most 4 pages are rendered at the same time and the other requests wait for their turn. When a client disconnects, its request is dropped: if it was waiting, its page is never opened, and if it was rendering, its page is closed right away.
 
 With the default limit of 4 pages, the container uses about 1 GB of memory, with peaks of around 1.6 GB on heavy pages, so give it at least 2 GB (more if you raise `SPLASH_MAX_PAGES`).
 
-Each page gets up to 120 seconds in total. Once its HTML has loaded, the server waits up to 10 seconds for images and other resources (if they take longer, it reads the page anyway) and then spends up to 30 seconds loading lazy content: it scrolls down one screen at a time and, at the bottom, waits up to 3 seconds until the page goes a second without loading scripts or data. Set `SPLASH_REQUEST_TIMEOUT`, `SPLASH_LOAD_TIMEOUT` and `SPLASH_SCROLL_TIMEOUT` (in milliseconds) to change them.
+Each page gets up to 120 seconds in total. Once its HTML has loaded, the server waits up to 10 seconds for images and other resources (if they take longer, it reads the page anyway) and then spends up to 30 seconds loading lazy content: it scrolls down one screen at a time and, at the bottom, waits up to 3 seconds until the page goes a second without loading scripts or data.
 
-The browser announces English as its language, like a regular Chrome (`Accept-Language: en-US,en;q=0.9`). Set `SPLASH_LOCALE` (e.g. `-e SPLASH_LOCALE=es-UY`) to put another language first, with English as a fallback; some websites use it to pick the language of their content.
+The browser announces English as its language, like a regular Chrome (`Accept-Language: en-US,en;q=0.9`). Set `SPLASH_LOCALE` (e.g. `es-UY`) to put another language first, with English as a fallback; some websites use it to pick the language of their content.
 
 Ads and trackers are blocked with Ghostery's adblocker (https://github.com/ghostery/adblocker). The server downloads its filter lists from GitHub when it starts and updates them once a day. If the first download fails, pages are rendered without blocking ads and the next request tries again; if an update fails, the server keeps the lists it has.
 
-Pages can't reach internal networks (loopback, private ranges, link-local addresses such as cloud metadata endpoints, etc.). The server answers 403 when the URL points to one, and all the browser's traffic goes through an internal proxy that also blocks them in redirects, subresources and WebSockets. To allow specific internal networks, set `SPLASH_ALLOWED_NETWORKS` to a comma-separated list of addresses or CIDR ranges (e.g. `-e SPLASH_ALLOWED_NETWORKS=10.1.2.0/24,192.168.1.10`).
-
-Please note that this command needs the seccomp_profile.json file from this repository, because Chrome runs with its sandbox enabled. It is Docker's default seccomp profile (https://github.com/moby/profiles/blob/main/seccomp/default.json) plus the user namespace rule that Playwright adds to its own profile (https://playwright.dev/docs/docker). Playwright's profile itself makes containers fail to start with recent Docker versions (tested with Docker 29.9 and runc 1.5.2).
+Pages can't reach internal networks (loopback, private ranges, link-local addresses such as cloud metadata endpoints, etc.). The server answers 403 when the URL points to one, and all the browser's traffic goes through an internal proxy that also blocks them in redirects, subresources and WebSockets. To allow specific internal networks, list them in `SPLASH_ALLOWED_NETWORKS` (e.g. `10.1.2.0/24,192.168.1.10`).
 
 ### Usage:
 Send the URL to `/scrape` with the token. Only http and https URLs are accepted.
@@ -37,7 +49,11 @@ Send the URL to `/scrape` with the token. Only http and https URLs are accepted.
 curl -X POST http://127.0.0.1:56572/scrape -H 'Authorization: Bearer <your-token>' -H 'Content-Type: application/json' -d '{"url": "https://example.com"}'
 ```
 
-The response body is the rendered HTML, including the content of open shadow roots as `<template shadowrootmode="open">` elements inside their hosts (closed shadow roots can't be read). Anything that Chrome doesn't render as a page, such as JSON, text, XML, images, PDFs, video and the files that the browser downloads, comes back as it was sent (also when a page redirects to it by itself), with its `Content-Type`, up to 50 MB (the server answers 413 for larger files); a response without content (204) comes back empty. The `X-Splash-Status` header has the HTTP status of the page (e.g. `404`) and `X-Splash-Url` its final URL, after redirects, including the ones the page does by itself (meta refresh, JavaScript). The server answers 403 when the URL points to an internal network or redirects to one over plain HTTP.
+The response body is the rendered HTML, including the content of open shadow roots as `<template shadowrootmode="open">` elements inside their hosts (closed shadow roots can't be read).
+
+Anything that Chrome doesn't render as a page, such as JSON, text, XML, images, PDFs, video and the files that the browser downloads, comes back as it was sent, with its `Content-Type`, also when a page redirects to it by itself. Files are limited to 50 MB: the server answers 413 for larger ones. A response without content (204) comes back empty.
+
+The `X-Splash-Status` header has the HTTP status of the page (e.g. `404`) and `X-Splash-Url` its final URL, after redirects, including the ones the page does by itself (meta refresh, JavaScript). The server answers 403 when the URL points to an internal network or redirects to one over plain HTTP.
 
 ### Tests:
 `npm test` runs the unit and integration tests (it needs Node.js 20 or later). The integration tests build the Docker image and run containers against local test pages, so they need Docker on Linux (amd64); they are skipped when Docker isn't available. `npm run test:unit` runs only the unit tests.
