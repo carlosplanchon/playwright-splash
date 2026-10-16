@@ -212,7 +212,9 @@ async function autoScroll(page){
 }
 
 function trackNavigations(page) {
-  const navigations = { started: 0, committed: Promise.resolve(), response: null, failure: null };
+  const navigations = { started: 0, committed: Promise.resolve(), response: null, failure: null, download: null };
+  // Ends the wait for a navigation that Chrome does not commit.
+  let settle = () => {};
   const isMainFrame = (request) => {
     try {
       return request.isNavigationRequest() && request.frame() === page.mainFrame();
@@ -225,16 +227,28 @@ function trackNavigations(page) {
     // Chrome's error pages retry the failed navigation by themselves; that is not a redirect.
     if (isMainFrame(request) && !request.redirectedFrom() && !page.url().startsWith('chrome-error://')) {
       navigations.started++;
-      navigations.committed = page.waitForEvent('framenavigated', {
-        predicate: (frame) => frame === page.mainFrame(),
-        timeout: navigationTimeout,
-      }).catch(() => {});
+      navigations.committed = Promise.race([
+        page.waitForEvent('framenavigated', {
+          predicate: (frame) => frame === page.mainFrame(),
+          timeout: navigationTimeout,
+        }).catch(() => {}),
+        new Promise((resolve) => { settle = resolve; }),
+      ]);
     }
   });
   page.on('response', (response) => {
     if (isMainFrame(response.request())) {
-      navigations.response = response;
+      // Without content, Chrome stays on the page that it already shows.
+      if ([204, 205].includes(response.status()) && page.url() !== 'about:blank') {
+        settle();
+      } else {
+        navigations.response = response;
+      }
     }
+  });
+  page.on('download', (download) => {
+    navigations.download = navigations.download || download;
+    settle();
   });
   page.on('requestfailed', (request) => {
     const { errorText } = request.failure();
@@ -301,6 +315,10 @@ async function readPage(page, navigations) {
     const navigated = () => navigations.started !== started && i < maxNavigations;
 
     await navigations.committed;
+    // A download or content that is not a page: it goes back as it was sent.
+    if (navigations.download || (navigations.response && !isDocument(navigations.response))) {
+      return null;
+    }
     await page.waitForLoadState('load', { timeout: loadTimeout }).catch(() => {});
     if (navigated()) {
       continue;
@@ -404,32 +422,32 @@ async function loadPage(context, url) {
   }
 
   const navigations = trackNavigations(page);
-  const downloading = page.waitForEvent('download', { timeout: 0 }).catch(() => null);
   try {
     await page.goto(url, { timeout: navigationTimeout, waitUntil: 'domcontentloaded' });
   } catch (error) {
     const { response } = navigations;
-    if (response && error.message.includes('Download is starting')) {
-      return {
-        content: await readDownload(await downloading, response),
-        status: response.status(),
-        url: response.url(),
-        type: response.headers()['content-type'] || 'application/octet-stream',
-      };
-    }
-    // Chrome stays on the previous page when there is no content.
+    // Chrome stays on its blank page when there is no content.
     if (response && [204, 205].includes(response.status())) {
       return { content: '', status: response.status(), url: response.url() };
     }
-    if (!response || !error.message.includes('ERR_HTTP_RESPONSE_CODE_FAILURE')) {
+    // Downloads and HTTP errors without a body have a response too.
+    if (!response || !['Download is starting', 'ERR_HTTP_RESPONSE_CODE_FAILURE'].some((text) => error.message.includes(text))) {
       throw error;
     }
   }
-  const rendered = !navigations.response || isDocument(navigations.response);
-  const content = rendered ? await readPage(page, navigations) : null;
+  const content = await readPage(page, navigations);
+
+  const { response, failure, download } = navigations;
+  if (download) {
+    return {
+      content: await readDownload(download, response),
+      status: response.status(),
+      url: response.url(),
+      type: response.headers()['content-type'] || 'application/octet-stream',
+    };
+  }
 
   // The proxy refused the page (a redirect to an internal network).
-  const { response, failure } = navigations;
   if (response && response.headers()['x-splash-blocked'] === blockedMarker) {
     const error = new Error('The url or one of its redirects points to an internal network.');
     error.status = 403;
@@ -444,7 +462,7 @@ async function loadPage(context, url) {
     return { content: await response.text().catch(() => ''), status: response.status(), url: response.url() };
   }
 
-  if (!rendered) {
+  if (response && !isDocument(response)) {
     const type = response.headers()['content-type'];
     return { content: await readFile(page, response), status: response.status(), url: response.url(), type };
   }

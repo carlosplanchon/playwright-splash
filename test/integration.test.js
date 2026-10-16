@@ -354,6 +354,24 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       assert.equal(res.body, 'a,b\n1,2\n');
     });
 
+    it('returns what a page sends itself to when it is not a page', slow, async () => {
+      const download = await scrape(container, `${pagesUrl}/refresh-download.html`);
+      assert.equal(download.headers.get('content-type'), 'text/csv');
+      assert.equal(download.body, 'a,b\n1,2\n');
+
+      const json = await scrape(container, `${pagesUrl}/js-redirect-json.html`);
+      assert.equal(json.headers.get('content-type'), 'application/json');
+      assert.equal(json.headers.get('x-splash-url'), `${pagesUrl}/data.json`);
+      assert.equal(json.body, fs.readFileSync(path.join(pagesDir, 'data.json'), 'utf8'));
+    });
+
+    it('keeps the page when it sends itself to a response without content', slow, async () => {
+      const res = await scrape(container, `${pagesUrl}/js-redirect-no-content.html`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('x-splash-status'), '200');
+      assert.match(res.body, /<p>redirect<\/p>/);
+    });
+
     it('refuses files larger than 50 MB', slow, async () => {
       const res = await scrape(container, `${pagesUrl}/huge.bin`);
       assert.equal(res.status, 413);
