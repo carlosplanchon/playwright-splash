@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const fs = require('fs');
 const express = require('express');
 const { chromium } = require('patchright');
 const { PlaywrightBlocker, adsAndTrackingLists } = require('@ghostery/adblocker-playwright');
@@ -20,6 +21,7 @@ const navigationTimeout = 60000;
 const maxNavigations = 5;
 const lazyContentTimeout = 3000;
 const listsUpdateInterval = 24 * 60 * 60 * 1000;
+const maxFileSize = 50 * 1024 * 1024;
 const token = process.env.SPLASH_TOKEN;
 
 if (!token) {
@@ -303,6 +305,73 @@ async function readPage(page, navigations) {
   }
 }
 
+function mimeType(response) {
+  return (response.headers()['content-type'] || 'text/html').split(';')[0].trim().toLowerCase();
+}
+
+// Chrome renders these as documents; anything else comes back as it was sent.
+function isDocument(response) {
+  return ['text/html', 'application/xhtml+xml', 'image/svg+xml'].includes(mimeType(response));
+}
+
+function fileTooLarge() {
+  const error = new Error(`The file is larger than ${maxFileSize / 1024 / 1024} MB.`);
+  error.status = 413;
+  return error;
+}
+
+// Fetches the file again from its own page.
+async function fetchFromPage(page, url) {
+  const base64 = await page.evaluate(async ([url, maxSize]) => {
+    const stream = (await fetch(url)).body.getReader();
+    const chunks = [];
+    let size = 0;
+    for (let chunk = await stream.read(); !chunk.done; chunk = await stream.read()) {
+      size += chunk.value.length;
+      if (size > maxSize) {
+        await stream.cancel();
+        return null;
+      }
+      chunks.push(chunk.value);
+    }
+    return new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve(reader.result.slice(reader.result.indexOf(',') + 1));
+      reader.readAsDataURL(new Blob(chunks));
+    });
+  }, [url, maxFileSize]);
+  if (base64 === null) {
+    throw fileTooLarge();
+  }
+  return Buffer.from(base64, 'base64');
+}
+
+async function readFile(page, response) {
+  if (Number(response.headers()['content-length']) > maxFileSize) {
+    throw fileTooLarge();
+  }
+  // Chrome hands PDFs, video and audio to its viewers, which take over the response.
+  const type = mimeType(response);
+  const viewed = type === 'application/pdf' || type.startsWith('video/') || type.startsWith('audio/');
+  const body = viewed ? await fetchFromPage(page, response.url()) : await response.body();
+  if (body.length > maxFileSize) {
+    throw fileTooLarge();
+  }
+  return body;
+}
+
+async function readDownload(download, response) {
+  if (Number(response.headers()['content-length']) > maxFileSize) {
+    await download.cancel();
+    throw fileTooLarge();
+  }
+  const file = await download.path();
+  if ((await fs.promises.stat(file)).size > maxFileSize) {
+    throw fileTooLarge();
+  }
+  return fs.promises.readFile(file);
+}
+
 async function loadPage(context, url) {
   const page = await context.newPage();
 
@@ -312,14 +381,29 @@ async function loadPage(context, url) {
   }
 
   const navigations = trackNavigations(page);
+  const downloading = page.waitForEvent('download', { timeout: 0 }).catch(() => null);
   try {
     await page.goto(url, { timeout: navigationTimeout, waitUntil: 'domcontentloaded' });
   } catch (error) {
-    if (!navigations.response || !error.message.includes('ERR_HTTP_RESPONSE_CODE_FAILURE')) {
+    const { response } = navigations;
+    if (response && error.message.includes('Download is starting')) {
+      return {
+        content: await readDownload(await downloading, response),
+        status: response.status(),
+        url: response.url(),
+        type: response.headers()['content-type'] || 'application/octet-stream',
+      };
+    }
+    // Chrome stays on the previous page when there is no content.
+    if (response && [204, 205].includes(response.status())) {
+      return { content: '', status: response.status(), url: response.url() };
+    }
+    if (!response || !error.message.includes('ERR_HTTP_RESPONSE_CODE_FAILURE')) {
       throw error;
     }
   }
-  const content = await readPage(page, navigations);
+  const rendered = !navigations.response || isDocument(navigations.response);
+  const content = rendered ? await readPage(page, navigations) : null;
 
   // The proxy refused the page (a redirect to an internal network).
   const { response, failure } = navigations;
@@ -337,6 +421,10 @@ async function loadPage(context, url) {
     return { content: await response.text().catch(() => ''), status: response.status(), url: response.url() };
   }
 
+  if (!rendered) {
+    const type = response.headers()['content-type'];
+    return { content: await readFile(page, response), status: response.status(), url: response.url(), type };
+  }
   return { content, status: response && response.status(), url: page.url() };
 }
 
@@ -378,6 +466,10 @@ app.post('/scrape', async (req, res) => {
       res.set('X-Splash-Status', String(result.status));
     }
     res.set('X-Splash-Url', result.url);
+    if (result.type) {
+      // res.set would add a charset to text types.
+      res.setHeader('Content-Type', result.type);
+    }
     res.send(result.content);
   } catch (error) {
     if (clientGone.signal.aborted) {

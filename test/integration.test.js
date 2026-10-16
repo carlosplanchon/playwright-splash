@@ -45,7 +45,9 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
   let pagesUrl;
   let pageServer;
 
-  const contentTypes = { '.html': 'text/html', '.svg': 'image/svg+xml', '.gif': 'image/gif', '.js': 'text/javascript' };
+  const contentTypes = {
+    '.html': 'text/html', '.svg': 'image/svg+xml', '.gif': 'image/gif', '.js': 'text/javascript', '.json': 'application/json', '.pdf': 'application/pdf',
+  };
 
   function dockerArgs(env) {
     const variables = {
@@ -179,6 +181,23 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
           res.end('lazy content');
         }, Number(url.searchParams.get('delay') || 0));
       }
+      if (url.pathname === '/no-content') {
+        res.writeHead(204);
+        return res.end();
+      }
+      if (url.pathname === '/download.csv') {
+        res.writeHead(200, { 'Content-Type': 'text/csv', 'Content-Disposition': 'attachment; filename="data.csv"' });
+        return res.end('a,b\n1,2\n');
+      }
+      if (url.pathname === '/video.mp4') {
+        res.writeHead(200, { 'Content-Type': 'video/mp4', 'Content-Length': '10000' });
+        return res.end(Buffer.alloc(10000, 7));
+      }
+      if (url.pathname === '/huge.bin') {
+        // Announces more than 50 MB and never sends it.
+        res.writeHead(200, { 'Content-Type': 'application/octet-stream', 'Content-Length': String(60 * 1024 * 1024) });
+        return res.write(Buffer.alloc(64 * 1024));
+      }
       if (url.pathname === '/spoof-blocked') {
         res.writeHead(200, { 'Content-Type': 'text/html', 'X-Splash-Blocked': 'not-the-marker' });
         return res.end('<p>spoofed</p>');
@@ -302,6 +321,40 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       const res = await scrape(container, `${pagesUrl}/test.svg`);
       assert.equal(res.status, 200);
       assert.match(res.body, /<svg/);
+    });
+
+    it('returns other content, such as JSON, PDF and video, as it was sent', slow, async () => {
+      for (const [file, type] of [['data.json', 'application/json'], ['file.pdf', 'application/pdf']]) {
+        const res = await scrape(container, `${pagesUrl}/${file}`);
+        assert.equal(res.status, 200);
+        assert.equal(res.headers.get('content-type'), type);
+        assert.equal(res.headers.get('x-splash-status'), '200');
+        assert.equal(res.body, fs.readFileSync(path.join(pagesDir, file), 'utf8'));
+      }
+      const video = await scrape(container, `${pagesUrl}/video.mp4`);
+      assert.equal(video.headers.get('content-type'), 'video/mp4');
+      assert.equal(video.body, '\x07'.repeat(10000));
+    });
+
+    it('returns the files that the browser downloads', slow, async () => {
+      const res = await scrape(container, `${pagesUrl}/download.csv`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('content-type'), 'text/csv');
+      assert.equal(res.headers.get('x-splash-url'), `${pagesUrl}/download.csv`);
+      assert.equal(res.body, 'a,b\n1,2\n');
+    });
+
+    it('refuses files larger than 50 MB', slow, async () => {
+      const res = await scrape(container, `${pagesUrl}/huge.bin`);
+      assert.equal(res.status, 413);
+      assert.match(res.body, /larger than 50 MB/);
+    });
+
+    it('answers responses without content with an empty body', slow, async () => {
+      const res = await scrape(container, `${pagesUrl}/no-content`);
+      assert.equal(res.status, 200);
+      assert.equal(res.headers.get('x-splash-status'), '204');
+      assert.equal(res.body, '');
     });
 
     it('stops scrolling endless pages after SPLASH_SCROLL_TIMEOUT', slow, async () => {
