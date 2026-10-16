@@ -323,6 +323,16 @@ describe('playwright-splash in Docker', { skip: dockerAvailable() ? false : 'Doc
       assert.match(res.body, /<svg/);
     });
 
+    it('includes the content of open shadow roots', slow, async () => {
+      const res = await scrape(container, `${pagesUrl}/shadow.html`);
+      assert.equal(res.status, 200);
+      assert.match(res.body, /^<!DOCTYPE html><html lang="en">/);
+      assert.match(res.body, /<div id="open"><template shadowrootmode="open"><p>open shadow content<\/p>/);
+      assert.match(res.body, /<b>nested shadow content<\/b>/);
+      assert.match(res.body, /<div id="declarative"><template shadowrootmode="open"><p>declarative shadow content<\/p><\/template><\/div>/);
+      assert.doesNotMatch(res.body, /closed shadow content/);
+    });
+
     it('returns other content, such as JSON, PDF and video, as it was sent', slow, async () => {
       for (const [file, type] of [['data.json', 'application/json'], ['file.pdf', 'application/pdf']]) {
         const res = await scrape(container, `${pagesUrl}/${file}`);

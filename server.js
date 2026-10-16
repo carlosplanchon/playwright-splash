@@ -270,6 +270,29 @@ async function waitForRequests(page, requests, deadline) {
   }
 }
 
+// page.content(), plus the open shadow roots as <template shadowrootmode> elements.
+function readContent(page) {
+  return page.evaluate(() => {
+    const roots = [];
+    const collect = (root) => {
+      for (const element of root.querySelectorAll('*')) {
+        if (element.shadowRoot) {
+          roots.push(element.shadowRoot);
+          collect(element.shadowRoot);
+        }
+      }
+    };
+    collect(document);
+    const html = document.documentElement;
+    const doctype = document.doctype ? new XMLSerializer().serializeToString(document.doctype) : '';
+    if (!roots.length || !html || !(document instanceof HTMLDocument)) {
+      return doctype + (html ? html.outerHTML : '');
+    }
+    const tag = html.cloneNode(false).outerHTML.replace(/<\/html>$/, '');
+    return doctype + tag + html.getHTML({ serializableShadowRoots: true, shadowRoots: roots }) + '</html>';
+  });
+}
+
 // Follows the redirects that the page does by itself.
 async function readPage(page, navigations) {
   const requests = trackRequests(page);
@@ -293,7 +316,7 @@ async function readPage(page, navigations) {
       await autoScroll(page);
       // The lazy content that the scroll requested.
       await waitForRequests(page, requests, Math.min(scrollDeadline, Date.now() + lazyContentTimeout));
-      const content = await page.content();
+      const content = await readContent(page);
       if (!navigated()) {
         return content;
       }
