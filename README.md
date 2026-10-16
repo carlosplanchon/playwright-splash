@@ -19,6 +19,8 @@ docker run -it --rm --init --security-opt seccomp=seccomp_profile.json -e SPLASH
 
 At most 4 pages are rendered at the same time and the other requests wait for their turn. Set `SPLASH_MAX_PAGES` (e.g. `-e SPLASH_MAX_PAGES=8`) to change that limit. When a client disconnects, its request is dropped: if it was waiting, its page is never opened, and if it was rendering, its page is closed right away.
 
+With the default limit of 4 pages, the container uses about 1 GB of memory, with peaks of around 1.6 GB on heavy pages, so give it at least 2 GB (more if you raise `SPLASH_MAX_PAGES`).
+
 Each page gets up to 120 seconds in total. Once its HTML has loaded, the server waits up to 10 seconds for images and other resources (if they take longer, it reads the page anyway) and then spends up to 30 seconds loading lazy content: it scrolls down one screen at a time and, at the bottom, waits up to 3 seconds until the page goes a second without loading scripts or data. Set `SPLASH_REQUEST_TIMEOUT`, `SPLASH_LOAD_TIMEOUT` and `SPLASH_SCROLL_TIMEOUT` (in milliseconds) to change them.
 
 The browser announces English as its language, like a regular Chrome (`Accept-Language: en-US,en;q=0.9`). Set `SPLASH_LOCALE` (e.g. `-e SPLASH_LOCALE=es-UY`) to put another language first, with English as a fallback; some websites use it to pick the language of their content.
